@@ -135,11 +135,40 @@ async function setupAuth() {
         body: JSON.stringify({ email, create_user: true })
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setAuthStatus(`Sign-in link sent to ${email}. Check your inbox, then return to this page.`);
+      setAuthStatus(`Sign-in link sent to ${email}. Use the link, or enter the 6-digit code below.`);
     } catch (error) {
       setAuthStatus(`Could not send link: ${error.message || error}`);
     } finally {
       $("authEmailBtn").disabled = false;
+    }
+  });
+  // Six-digit email OTP: verifies without a redirect, so it works even before
+  // the Pages URL is added to Supabase's redirect allowlist.
+  $("authOtpBtn").addEventListener("click", async () => {
+    const email = $("authEmail").value.trim();
+    const token = $("authOtp").value.replace(/\D/g, "");
+    if (!email || !token) {
+      setAuthStatus("Enter your email and the 6-digit code first.");
+      return;
+    }
+    $("authOtpBtn").disabled = true;
+    try {
+      const response = await authFetchRaw("/auth/v1/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "email", email, token })
+      });
+      const session = await response.json().catch(() => ({}));
+      if (!response.ok || !session.access_token) {
+        throw new Error(session.error_description || session.msg || `HTTP ${response.status}`);
+      }
+      const body = await exchangeSession(session.access_token);
+      setAuthStatus(`Signed in as ${body.username || email}.`);
+      $("authSignOut").hidden = false;
+    } catch (error) {
+      setAuthStatus(`Could not verify code: ${error.message || error}`);
+    } finally {
+      $("authOtpBtn").disabled = false;
     }
   });
   $("authSignOut").addEventListener("click", () => {
