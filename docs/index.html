@@ -9,6 +9,8 @@
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
   <meta name="sxl-api-base" content="https://ffcnegeupptbrxzhjpdm.supabase.co/functions/v1/sxl-platform">
+  <meta name="sxl-auth-url" content="https://ffcnegeupptbrxzhjpdm.supabase.co">
+  <meta name="sxl-auth-anon-key" content="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZmY25lZ2V1cHB0YnJ4emhqcGRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgzODEwMjcsImV4cCI6MjEwMzk1NzAyN30.nyNczZ8VmgAzlYRrn_pWs1myQ6BxC7NRVpcMrEwyXso">
 </head>
 <body>
   <header>
@@ -17,6 +19,20 @@
   </header>
 
   <main>
+    <!-- Sign-in card. Shown only when the page is configured with Supabase
+         Auth (sxl-auth-url / sxl-auth-anon-key meta). Local mode hides it and
+         uses the anonymous local token. -->
+    <section class="card" id="authCard" hidden>
+      <h2>Account</h2>
+      <p id="authStatus" class="status">Sign in for a stable, verified account.</p>
+      <label>Email
+        <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email">
+      </label>
+      <button id="authEmailBtn">Email me a sign-in link</button>
+      <div id="authProviders" class="row"></div>
+      <button id="authSignOut" class="secondary" hidden>Sign out</button>
+    </section>
+
     <section class="card">
       <h2>New run</h2>
       <label>Input file (optional)

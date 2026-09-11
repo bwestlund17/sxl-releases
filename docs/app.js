@@ -18,8 +18,136 @@ const API_BASE = (() => {
 })();
 const api = (path) => `${API_BASE}${String(path).startsWith("/") ? path : `/${path}`}`;
 
+// Supabase Auth config (injected as meta tags on the hosted page). Absent in
+// local mode, where the app keeps using the anonymous local token.
+const AUTH_URL = ((document.querySelector('meta[name="sxl-auth-url"]') || {}).content || "").replace(/\/+$/, "");
+const AUTH_ANON = (document.querySelector('meta[name="sxl-auth-anon-key"]') || {}).content || "";
+const AUTH_ENABLED = Boolean(AUTH_URL && AUTH_ANON);
+const OAUTH_PROVIDERS = ["google", "github", "azure", "apple", "gitlab", "bitbucket", "discord", "linkedin_oidc"];
+const PROVIDER_LABELS = { azure: "Microsoft", linkedin_oidc: "LinkedIn" };
+
 function setStatus(message) {
   $("status").textContent = message;
+}
+
+function setAuthStatus(message) {
+  $("authStatus").textContent = message;
+}
+
+function authFetchRaw(path, options = {}) {
+  const headers = Object.assign({ apikey: AUTH_ANON }, options.headers || {});
+  return fetch(`${AUTH_URL}${path}`, Object.assign({}, options, { headers }));
+}
+
+function readHashSession() {
+  const hash = location.hash.startsWith("#") ? location.hash.slice(1) : location.hash;
+  if (!hash) return null;
+  const params = new URLSearchParams(hash);
+  const accessToken = params.get("access_token");
+  const error = params.get("error_description") || params.get("error") || "";
+  if (!accessToken && !error) return null;
+  return { accessToken, error };
+}
+
+async function exchangeSession(accessToken) {
+  const response = await fetch(api("/login"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ accessToken })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  state.token = body.token;
+  localStorage.setItem("sxl.platform.token", body.token);
+  if (body.username) localStorage.setItem("sxl.platform.username", body.username);
+  return body;
+}
+
+async function handleAuthRedirect() {
+  const session = readHashSession();
+  if (!session) return false;
+  history.replaceState(null, "", location.pathname + location.search);
+  if (session.error) {
+    setAuthStatus(`Sign-in failed: ${session.error}`);
+    return false;
+  }
+  try {
+    const body = await exchangeSession(session.accessToken);
+    setAuthStatus(`Signed in as ${body.username || "verified user"}.`);
+    $("authSignOut").hidden = false;
+    return true;
+  } catch (error) {
+    setAuthStatus(`Sign-in failed: ${error.message || error}`);
+    return false;
+  }
+}
+
+function renderProviderButtons(external = {}) {
+  const target = $("authProviders");
+  target.innerHTML = "";
+  const enabled = OAUTH_PROVIDERS.filter((name) => external[name]);
+  for (const provider of enabled) {
+    const button = document.createElement("button");
+    button.textContent = `Continue with ${PROVIDER_LABELS[provider] || provider[0].toUpperCase() + provider.slice(1)}`;
+    button.className = "secondary";
+    button.style.marginRight = "8px";
+    button.addEventListener("click", () => {
+      const redirectTo = location.origin + location.pathname;
+      location.href = `${AUTH_URL}/auth/v1/authorize?provider=${encodeURIComponent(provider)}&redirect_to=${encodeURIComponent(redirectTo)}`;
+    });
+    target.appendChild(button);
+  }
+  if (!enabled.length) {
+    const note = document.createElement("span");
+    note.className = "muted";
+    note.textContent = "Email is the enabled sign-in method; OAuth providers appear here once enabled in Supabase.";
+    target.appendChild(note);
+  }
+}
+
+async function setupAuth() {
+  $("authCard").hidden = false;
+  const storedUser = localStorage.getItem("sxl.platform.username");
+  if (storedUser) {
+    setAuthStatus(`Signed in as ${storedUser}.`);
+    $("authSignOut").hidden = false;
+  }
+  try {
+    const response = await authFetchRaw("/auth/v1/settings");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const settings = await response.json();
+    renderProviderButtons(settings.external || {});
+  } catch (error) {
+    setAuthStatus(`Auth settings unavailable (${error.message || error}).`);
+  }
+  $("authEmailBtn").addEventListener("click", async () => {
+    const email = $("authEmail").value.trim();
+    if (!email) {
+      setAuthStatus("Enter your email first.");
+      return;
+    }
+    $("authEmailBtn").disabled = true;
+    try {
+      const redirectTo = location.origin + location.pathname;
+      const response = await authFetchRaw(`/auth/v1/otp?redirect_to=${encodeURIComponent(redirectTo)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, create_user: true })
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setAuthStatus(`Sign-in link sent to ${email}. Check your inbox, then return to this page.`);
+    } catch (error) {
+      setAuthStatus(`Could not send link: ${error.message || error}`);
+    } finally {
+      $("authEmailBtn").disabled = false;
+    }
+  });
+  $("authSignOut").addEventListener("click", () => {
+    state.token = null;
+    localStorage.removeItem("sxl.platform.token");
+    localStorage.removeItem("sxl.platform.username");
+    location.reload();
+  });
 }
 
 async function login() {
@@ -206,8 +334,12 @@ async function loadRuns() {
   }
 }
 
-window.addEventListener("DOMContentLoaded", () => {
+window.addEventListener("DOMContentLoaded", async () => {
   $("submit").addEventListener("click", submitRun);
   $("refresh").addEventListener("click", loadRuns);
+  if (AUTH_ENABLED) {
+    await setupAuth();
+    await handleAuthRedirect();
+  }
   loadRuns();
 });
