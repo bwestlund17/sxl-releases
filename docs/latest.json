@@ -1,0 +1,14 @@
+{
+  "version": "0.1.0",
+  "files": [
+    {
+      "url": "https://github.com/bwestlund17/sxl-releases/releases/download/v0.1.0/sxl-Setup-0.1.0.exe",
+      "sha512": "qwx7uE4F7foeJZeQeZdFiQF0efd3rqORbxBHmrWK43HFltAPA3QwbNIv1mfGrB0hsOfShTqvmCZ9jfr/hHRcSA==",
+      "size": 78286764
+    }
+  ],
+  "path": "sxl-Setup-0.1.0.exe",
+  "sha512": "qwx7uE4F7foeJZeQeZdFiQF0efd3rqORbxBHmrWK43HFltAPA3QwbNIv1mfGrB0hsOfShTqvmCZ9jfr/hHRcSA==",
+  "releaseDate": "2026-09-11T19:19:08.481Z",
+  "releaseNotes": "sxl desktop 0.1.0 — initial release (unsigned; Authenticode signing pending). Includes the default GitHub Pages update feed."
+}

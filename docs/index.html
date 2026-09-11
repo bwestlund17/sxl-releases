@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SXL Platform — cloud-runs web app</title>
+  <!-- Relative asset paths so the same app works at "/" (local-mode server)
+       and under a nested prefix (hosted Edge Function). -->
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+  <meta name="sxl-api-base" content="https://ffcnegeupptbrxzhjpdm.supabase.co/functions/v1/sxl-platform">
+</head>
+<body>
+  <header>
+    <h1>SXL Platform</h1>
+    <p class="muted">Browser surface for the sxl cloud-runs contract. Submit a prompt (optionally with a workbook), track the run, and download results. Execution happens on the sxl platform worker; run <code>sxl platform worker</code> to execute queued runs.</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>New run</h2>
+      <label>Input file (optional)
+        <input id="file" type="file" accept=".xlsx,.xlsm,.csv,.tsv,.txt,.pdf">
+      </label>
+      <label>Prompt
+        <textarea id="prompt" rows="4" placeholder="e.g. Combine these sheets into a summary report."></textarea>
+      </label>
+      <div class="row">
+        <label>Mode
+          <select id="mode">
+            <option value="action">action</option>
+            <option value="ask">ask</option>
+          </select>
+        </label>
+        <label>Model (optional)
+          <input id="model" placeholder="provider/model">
+        </label>
+      </div>
+      <button id="submit">Upload + submit</button>
+      <p id="status" class="status">Idle.</p>
+    </section>
+
+    <section class="card">
+      <h2>Result</h2>
+      <pre id="output">No run yet.</pre>
+      <div id="downloads"></div>
+    </section>
+
+    <section class="card">
+      <h2>Recent runs</h2>
+      <button id="refresh" class="secondary">Refresh</button>
+      <ul id="runs"></ul>
+    </section>
+  </main>
+</body>
+</html>
