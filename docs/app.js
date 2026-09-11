@@ -363,6 +363,55 @@ async function loadRuns() {
   }
 }
 
+// ---- Credit billing (Stripe Checkout) -------------------------------------
+function setBillingStatus(message) {
+  $("billingStatus").textContent = message;
+}
+
+async function buyPack(packId) {
+  setBillingStatus("Starting checkout…");
+  try {
+    const response = await authFetch(api("/v1/billing/checkout"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ packId })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 503) throw new Error("billing is not enabled on this deployment yet");
+    if (response.status === 403) throw new Error("sign in with a verified account (Google/email) to buy credits");
+    if (!response.ok || !body.url) throw new Error(body.error || `HTTP ${response.status}`);
+    location.href = body.url;
+  } catch (error) {
+    setBillingStatus(`Checkout unavailable: ${error.message || error}`);
+  }
+}
+
+async function loadBilling() {
+  let body;
+  try {
+    const response = await fetch(api("/v1/billing/packs"));
+    if (!response.ok) return; // local mode / older server has no billing surface
+    body = await response.json();
+  } catch {
+    return;
+  }
+  $("billingCard").hidden = false;
+  const target = $("billingPacks");
+  target.innerHTML = "";
+  for (const pack of body.packs || []) {
+    const button = document.createElement("button");
+    button.textContent = `${pack.label} — $${(Number(pack.amountCents) / 100).toFixed(2)}`;
+    button.disabled = !body.configured;
+    button.style.marginRight = "8px";
+    button.addEventListener("click", () => buyPack(pack.id));
+    target.appendChild(button);
+  }
+  const outcome = new URLSearchParams(location.search).get("billing");
+  if (outcome === "success") setBillingStatus("Payment received — credits will appear shortly.");
+  else if (outcome === "cancel") setBillingStatus("Checkout cancelled.");
+  else setBillingStatus(body.configured ? "Credits are added after payment (Stripe)." : "Billing is not enabled on this deployment yet.");
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   $("submit").addEventListener("click", submitRun);
   $("refresh").addEventListener("click", loadRuns);
@@ -370,5 +419,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     await setupAuth();
     await handleAuthRedirect();
   }
+  loadBilling();
   loadRuns();
 });
