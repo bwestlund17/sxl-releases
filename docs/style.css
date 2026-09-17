@@ -98,6 +98,20 @@ a { color: #0d6b3f; }
   outline: 2px solid #0d6b3f; outline-offset: -2px; background: #f2f9f5;
 }
 #grid td.fonly { color: #7a1f1f; font-family: Consolas, monospace; }
+#grid td.pending { background: #fdf6e3; font-weight: 600; }
+#grid td.pending::after {
+  content: "•"; color: #b7791f; margin-left: 3px; font-weight: 700;
+}
+#grid td input.cell-editor {
+  width: 100%; height: 100%; border: none; outline: none; padding: 0;
+  font: inherit; background: #ffffff;
+}
+.mini-btn {
+  border: 1px solid #d0d7de; border-radius: 4px; background: #ffffff;
+  padding: 1px 8px; font-size: 12px;
+}
+.mini-btn.primary { background: #0d6b3f; border-color: #0d6b3f; color: #ffffff; }
+#pendingWrap { display: inline-flex; align-items: center; gap: 6px; color: #b7791f; font-weight: 600; }
 #statusbar {
   display: flex; align-items: center; gap: 12px;
   padding: 3px 10px; border-top: 1px solid #d0d7de;

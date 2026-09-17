@@ -8,7 +8,9 @@ const state = {
   // grid: { fileName, fileId?, runId?, sheets: [{name, cells, rows, cols}], active }
   workbook: null,
   selected: "A1",
-  pendingFileId: null
+  pendingFileId: null,
+  // staged web-grid edits, keyed by sheet name: Map<address, {value?|formula?}>
+  pending: {}
 };
 
 // Resolve the API base so the same app works at "/" (local-mode server) and
@@ -255,9 +257,42 @@ function emptyWorkbook(name) {
 function setWorkbook(workbook) {
   state.workbook = workbook;
   state.selected = "A1";
+  state.pending = {};
+  updatePendingBar();
   $("workbookTitle").textContent = workbook.fileName || "untitled";
   renderSheetTabs();
   renderGrid();
+}
+
+function activePending() {
+  const wb = state.workbook;
+  if (!wb) return new Map();
+  const name = wb.sheets[wb.active].name;
+  if (!state.pending[name]) state.pending[name] = new Map();
+  return state.pending[name];
+}
+
+function stageEdit(address, edit) {
+  const pending = activePending();
+  pending.set(address, edit);
+  updatePendingBar();
+  renderGrid();
+}
+
+function discardEdits() {
+  const wb = state.workbook;
+  if (!wb) return;
+  delete state.pending[wb.sheets[wb.active].name];
+  updatePendingBar();
+  renderGrid();
+}
+
+function updatePendingBar() {
+  const wb = state.workbook;
+  const pending = wb ? state.pending[wb.sheets[wb.active].name] : null;
+  const count = pending ? pending.size : 0;
+  $("pendingWrap").hidden = count === 0;
+  $("pendingCount").textContent = `${count} staged edit${count === 1 ? "" : "s"}`;
 }
 
 function renderSheetTabs() {
@@ -288,6 +323,7 @@ function renderGrid() {
   const wb = state.workbook;
   if (!wb) return;
   const sheet = wb.sheets[wb.active] || wb.sheets[0];
+  const pending = state.pending[sheet.name];
   // Always render a comfortable viewport, up to the preview caps.
   const rows = Math.max(40, Math.min(sheet.rows || 1, GRID_MAX_ROWS));
   const cols = Math.max(12, Math.min(sheet.cols || 1, GRID_MAX_COLS));
@@ -313,7 +349,10 @@ function renderGrid() {
       const address = `${columnToLetters(c)}${r}`;
       const td = document.createElement("td");
       td.dataset.addr = address;
-      const cell = sheet.cells[address];
+      const pendingEdit = pending && pending.get(address);
+      const cell = pendingEdit
+        ? (pendingEdit.formula ? { f: pendingEdit.formula } : { v: pendingEdit.value })
+        : sheet.cells[address];
       if (cell) {
         if (cell.v !== undefined && cell.v !== null) {
           td.textContent = String(cell.v);
@@ -323,8 +362,10 @@ function renderGrid() {
           td.classList.add("fonly");
         }
       }
+      if (pendingEdit) td.classList.add("pending");
       if (address === state.selected) td.classList.add("sel");
-      td.addEventListener("click", () => selectCell(address, sheet.cells[address]));
+      td.addEventListener("click", () => selectCell(address, effectiveCell(sheet, address)));
+      td.addEventListener("dblclick", () => editCell(address));
       tr.appendChild(td);
     }
     table.appendChild(tr);
@@ -332,7 +373,62 @@ function renderGrid() {
   const shown = Object.keys(sheet.cells || {}).length;
   $("gridStatus").textContent = `${sheet.name}: ${shown} cell${shown === 1 ? "" : "s"} loaded`
     + (shown >= 20000 ? " (preview capped)" : "");
-  selectCell(state.selected, (sheet.cells || {})[state.selected]);
+  selectCell(state.selected, effectiveCell(sheet, state.selected));
+}
+
+// Pending edits override the stored cell for display and the formula bar.
+function effectiveCell(sheet, address) {
+  const pending = state.pending[sheet.name];
+  const staged = pending && pending.get(address);
+  if (staged) return staged.formula ? { f: staged.formula } : { v: staged.value };
+  return (sheet.cells || {})[address];
+}
+
+// Double-click editing: a transient input inside the cell; Enter/blur stages
+// the edit, Esc cancels.
+function editCell(address) {
+  const td = $("grid").querySelector(`td[data-addr="${address}"]`);
+  const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
+  if (!td || !sheet) return;
+  const current = effectiveCell(sheet, address);
+  const initial = current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
+  td.textContent = "";
+  const input = document.createElement("input");
+  input.className = "cell-editor";
+  input.value = initial;
+  td.appendChild(input);
+  input.focus();
+  input.setSelectionRange(initial.length, initial.length);
+  const commit = () => {
+    const text = input.value.trim();
+    if (text === initial) {
+      renderGrid();
+      return;
+    }
+    stageEdit(address, text.startsWith("=") ? { formula: text } : { value: text });
+    selectCell(address, effectiveCell(sheet, address));
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      input.blur();
+    } else if (event.key === "Escape") {
+      input.removeEventListener("blur", commit);
+      renderGrid();
+    }
+  });
+  input.addEventListener("blur", commit);
+}
+
+// Formula-bar editing: Enter stages, Esc restores the current value.
+function formulaBarCommit() {
+  const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
+  if (!sheet) return;
+  const text = $("formulaBar").value.trim();
+  const current = effectiveCell(sheet, state.selected);
+  const currentText = current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
+  if (text === currentText) return;
+  stageEdit(state.selected, text.startsWith("=") ? { formula: text } : { value: text });
 }
 
 function selectCell(address, cell) {
@@ -343,7 +439,6 @@ function selectCell(address, cell) {
   const target = $("grid").querySelector(`td[data-addr="${address}"]`);
   if (target) target.classList.add("sel");
 }
-
 async function openWorkbookFile(file) {
   try {
     setStatus("Uploading file...");
@@ -518,34 +613,38 @@ async function loadRuns() {
   }
 }
 
-async function submitRun(promptText) {
+async function submitRun(promptText, overrides = {}) {
   const prompt = (promptText !== undefined ? promptText : $("prompt").value).trim();
-  if (!prompt) {
+  if (!prompt && !overrides.edits) {
     setStatus("Enter a prompt first.");
     return;
   }
   $("send").disabled = true;
-  addMessage("user", prompt);
-  if (promptText !== undefined) $("prompt").value = "";
+  if (prompt) addMessage("user", prompt);
+  if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
   const statusMessage = addMessage("sys", "Submitting…");
   try {
     await ensureToken();
-    let initFile;
+    let initFile = overrides.initFile || null;
     const file = $("file").files && $("file").files[0];
     if (file) {
       statusMessage.textContent = "Uploading attachment…";
       const uploaded = await uploadFile(file);
       initFile = uploaded.fileId;
       $("file").value = "";
-    } else if (state.pendingFileId) {
+    } else if (!initFile && state.pendingFileId) {
       initFile = state.pendingFileId;
     }
     const body = {
       prompt,
-      mode: $("mode").value === "ask" ? "ask" : "action"
+      mode: overrides.mode || ($("mode").value === "ask" ? "ask" : "action")
     };
     if (initFile) body.initFile = initFile;
-    if ($("model").value) body.model = $("model").value;
+    if (overrides.edits) {
+      body.edits = overrides.edits;
+      if (overrides.sheet) body.sheet = overrides.sheet;
+    }
+    if (!overrides.edits && $("model").value) body.model = $("model").value;
     statusMessage.textContent = "Queued…";
     const response = await authFetch("/api/spreadsheets", {
       method: "POST",
@@ -575,6 +674,47 @@ async function submitRun(promptText) {
   } finally {
     $("send").disabled = false;
   }
+}
+
+// Apply staged grid edits: the audited deterministic --set path. Chains from
+// a run result by promoting it to a fileId first (the stored upload stays
+// pristine; every run's output is a new version).
+async function applyEdits() {
+  const wb = state.workbook;
+  if (!wb) return;
+  const sheetName = wb.sheets[wb.active].name;
+  const pending = state.pending[sheetName];
+  if (!pending || pending.size === 0) return;
+  let fileId = wb.fileId;
+  if (!fileId && wb.runId) {
+    setStatus("Preparing result workbook…");
+    try {
+      const response = await authFetch("/api/spreadsheets/workbook/from-run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runId: wb.runId })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      fileId = body.fileId;
+    } catch (error) {
+      setStatus(`Could not chain from the result: ${error.message || error}`);
+      return;
+    }
+  }
+  if (!fileId) {
+    setStatus("Open a workbook first — an empty sheet has nothing to edit.");
+    return;
+  }
+  await submitRun("", {
+    edits: [...pending.values()].map((edit, index) => ({
+      address: [...pending.keys()][index],
+      ...(edit.formula ? { formula: edit.formula } : { value: edit.value })
+    })),
+    sheet: sheetName,
+    initFile: fileId,
+    mode: "action"
+  });
 }
 
 // ---- Credit billing (Stripe Checkout) -------------------------------------
@@ -680,6 +820,22 @@ window.addEventListener("DOMContentLoaded", async () => {
     $("accountPanel").hidden = !$("accountPanel").hidden;
   });
   $("runsLink").addEventListener("click", loadRuns);
+  $("applyEdits").addEventListener("click", applyEdits);
+  $("discardEdits").addEventListener("click", discardEdits);
+  $("formulaBar").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      formulaBarCommit();
+      $("formulaBar").blur();
+    } else if (event.key === "Escape") {
+      const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
+      $("formulaBar").value = sheet ? (() => {
+        const current = effectiveCell(sheet, state.selected);
+        return current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
+      })() : "";
+      $("formulaBar").blur();
+    }
+  });
   for (const chip of document.querySelectorAll(".chip-prompt")) {
     chip.addEventListener("click", () => submitRun(chip.dataset.prompt));
   }
