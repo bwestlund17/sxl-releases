@@ -3,80 +3,108 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SXL Platform — cloud-runs web app</title>
+  <title>SXL Platform — spreadsheet workspace</title>
   <!-- Relative asset paths so the same app works at "/" (local-mode server)
        and under a nested prefix (hosted Edge Function). -->
-  <link rel="stylesheet" href="style.css">
-  <script src="app.js" defer></script>
-  <meta name="sxl-api-base" content="https://ffcnegeupptbrxzhjpdm.supabase.co/functions/v1/sxl-platform">
+<meta name="sxl-api-base" content="https://ffcnegeupptbrxzhjpdm.supabase.co/functions/v1/sxl-platform">
   <meta name="sxl-auth-url" content="https://ffcnegeupptbrxzhjpdm.supabase.co">
   <meta name="sxl-auth-anon-key" content="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZmY25lZ2V1cHB0YnJ4emhqcGRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgzODEwMjcsImV4cCI6MjEwMzk1NzAyN30.nyNczZ8VmgAzlYRrn_pWs1myQ6BxC7NRVpcMrEwyXso">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
 </head>
 <body>
-  <header>
-    <h1>SXL Platform</h1>
-    <p class="muted">Browser surface for the sxl cloud-runs contract. Submit a prompt (optionally with a workbook), track the run, and download results. Execution happens on the sxl platform worker; run <code>sxl platform worker</code> to execute queued runs.</p>
+  <header id="topbar">
+    <div class="topbar-left">
+      <span class="brand-mark" title="sxl — audited Excel agent">SXL</span>
+      <input id="file" type="file" accept=".xlsx,.xlsm,.csv,.tsv,.txt,.pdf" hidden>
+      <button id="openFile" class="tool">Open File</button>
+      <button id="newFile" class="tool">New File</button>
+      <button id="exportFile" class="tool">Export File</button>
+    </div>
+    <div class="topbar-title" id="workbookTitle">empty-sheet.xlsx</div>
+    <div class="topbar-right">
+      <span id="creditsChip" class="chip" title="credit balance">— credits</span>
+      <div class="account-wrap">
+        <button id="accountBtn" class="tool">👤 Account</button>
+        <div id="accountPanel" class="panel" hidden>
+          <section id="authCard" hidden>
+            <h2>Account</h2>
+            <p id="authStatus" class="status">Sign in for a stable, verified account.</p>
+            <label>Email
+              <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email">
+            </label>
+            <button id="authEmailBtn">Email me a sign-in link</button>
+            <label>Or enter the code from the email
+              <input id="authOtp" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+            </label>
+            <button id="authOtpBtn" class="secondary">Verify code</button>
+            <div id="authProviders" class="row"></div>
+            <button id="authSignOut" class="secondary" hidden>Sign out</button>
+          </section>
+          <section id="billingCard" hidden>
+            <h2>Credits</h2>
+            <p id="billingStatus" class="status">Loading credit packs…</p>
+            <div id="billingPacks" class="row"></div>
+          </section>
+        </div>
+      </div>
+    </div>
   </header>
 
-  <main>
-    <!-- Sign-in card. Shown only when the page is configured with Supabase
-         Auth (sxl-auth-url / sxl-auth-anon-key meta). Local mode hides it and
-         uses the anonymous local token. -->
-    <section class="card" id="authCard" hidden>
-      <h2>Account</h2>
-      <p id="authStatus" class="status">Sign in for a stable, verified account.</p>
-      <label>Email
-        <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email">
-      </label>
-      <button id="authEmailBtn">Email me a sign-in link</button>
-      <label>Or enter the code from the email
-        <input id="authOtp" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
-      </label>
-      <button id="authOtpBtn" class="secondary">Verify code</button>
-      <div id="authProviders" class="row"></div>
-      <button id="authSignOut" class="secondary" hidden>Sign out</button>
-    </section>
+  <div id="formulaRow">
+    <span id="nameBox">A1</span>
+    <span class="fx">fx</span>
+    <input id="formulaBar" readonly placeholder="Select a cell">
+  </div>
 
-    <section class="card" id="billingCard" hidden>
-      <h2>Credits</h2>
-      <p id="billingStatus" class="status">Loading credit packs…</p>
-      <div id="billingPacks" class="row"></div>
-    </section>
-
-    <section class="card">
-      <h2>New run</h2>
-      <label>Input file (optional)
-        <input id="file" type="file" accept=".xlsx,.xlsm,.csv,.tsv,.txt,.pdf">
-      </label>
-      <label>Prompt
-        <textarea id="prompt" rows="4" placeholder="e.g. Combine these sheets into a summary report."></textarea>
-      </label>
-      <div class="row">
-        <label>Mode
-          <select id="mode">
-            <option value="action">action</option>
-            <option value="ask">ask</option>
-          </select>
-        </label>
-        <label>Model (optional)
-          <input id="model" placeholder="provider/model">
-        </label>
+  <main id="workspace">
+    <section id="gridPane">
+      <div id="gridScroll">
+        <table id="grid" aria-label="workbook grid"></table>
       </div>
-      <button id="submit">Upload + submit</button>
+      <div id="statusbar">
+        <span id="readyLabel">Ready</span>
+        <span id="gridStatus"></span>
+        <span class="spacer"></span>
+        <span id="zoomLabel">100%</span>
+      </div>
+      <div id="sheetbar">
+        <div id="sheetTabs"></div>
+      </div>
+    </section>
+
+    <aside id="chatPane">
+      <div class="chat-head">
+        <div class="chat-brand">SXL</div>
+        <div class="chat-sub"><span id="chatVersion">web workspace</span> · <a id="docsLink" href="https://github.com/bwestlund17/shortcut-xl" target="_blank" rel="noopener">how it works</a></div>
+      </div>
+      <div id="transcript">
+        <div class="chat-note">Ask sxl to build or change the workbook. Every mutation runs through the audited sxl ledger (run → review → revert) on the platform worker.</div>
+      </div>
+      <div id="chips">
+        <button class="chip-prompt" data-prompt="Build a sales forecast">Build a sales forecast</button>
+        <button class="chip-prompt" data-prompt="Create a budget tracker">Create a budget tracker</button>
+        <button class="chip-prompt" data-prompt="Summarize this workbook and list the top drivers">Summarize this workbook</button>
+      </div>
+      <div id="composer">
+        <button id="attach" class="icon-btn" title="Attach a file for the next run">📎</button>
+        <textarea id="prompt" rows="2" placeholder="Ask sxl anything..."></textarea>
+        <button id="send" class="send-btn" title="Submit run">➤</button>
+      </div>
+      <div id="composerMeta">
+        <select id="mode" title="run mode">
+          <option value="action">Action</option>
+          <option value="ask">Ask</option>
+        </select>
+        <select id="model" title="model"><option value="">model…</option></select>
+        <span class="spacer"></span>
+        <span id="runsLink" class="linkish" title="recent runs">runs</span>
+      </div>
       <p id="status" class="status">Idle.</p>
-    </section>
-
-    <section class="card">
-      <h2>Result</h2>
-      <pre id="output">No run yet.</pre>
-      <div id="downloads"></div>
-    </section>
-
-    <section class="card">
-      <h2>Recent runs</h2>
-      <button id="refresh" class="secondary">Refresh</button>
-      <ul id="runs"></ul>
-    </section>
+      <ul id="runs" hidden></ul>
+      <div id="downloads" hidden></div>
+      <pre id="output" hidden></pre>
+    </aside>
   </main>
 </body>
 </html>

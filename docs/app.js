@@ -1,7 +1,15 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { token: null, runId: null, polling: false };
+const state = {
+  token: null,
+  runId: null,
+  polling: false,
+  // grid: { fileName, fileId?, runId?, sheets: [{name, cells, rows, cols}], active }
+  workbook: null,
+  selected: "A1",
+  pendingFileId: null
+};
 
 // Resolve the API base so the same app works at "/" (local-mode server) and
 // under a nested prefix (hosted Supabase Edge Function, served at
@@ -205,10 +213,10 @@ async function ensureToken() {
 async function authFetch(path, options = {}) {
   const token = await ensureToken();
   const headers = Object.assign({}, options.headers || {}, { authorization: `Bearer ${token}` });
-  let response = await fetch(path, Object.assign({}, options, { headers }));
+  let response = await fetch(api(path), Object.assign({}, options, { headers }));
   if (response.status === 401) {
     await login();
-    response = await fetch(path, Object.assign({}, options, {
+    response = await fetch(api(path), Object.assign({}, options, {
       headers: Object.assign({}, options.headers || {}, { authorization: `Bearer ${state.token}` })
     }));
   }
@@ -218,26 +226,224 @@ async function authFetch(path, options = {}) {
 async function uploadFile(file) {
   const form = new FormData();
   form.append("file", file);
-  const response = await authFetch(api("/api/spreadsheets/upload"), { method: "POST", body: form });
+  const response = await authFetch("/api/spreadsheets/upload", { method: "POST", body: form });
   if (!response.ok) throw new Error(`upload failed: HTTP ${response.status}`);
   return response.json();
 }
 
-function renderDownloads(run) {
-  const target = $("downloads");
-  target.innerHTML = "";
-  const addDownload = (label, url) => {
-    const button = document.createElement("button");
-    button.textContent = label;
-    button.className = "secondary";
-    button.style.marginRight = "8px";
-    button.addEventListener("click", () => downloadUrl(url));
-    target.appendChild(button);
-  };
-  if (run.downloadUrl) addDownload("Download workbook", api(run.downloadUrl));
-  for (const artifact of run.artifacts || []) {
-    addDownload(`Download ${artifact}`, api(`/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`));
+// ---- Grid ------------------------------------------------------------------
+function columnToLetters(index) {
+  let letters = "";
+  while (index > 0) {
+    const rem = (index - 1) % 26;
+    letters = String.fromCharCode(65 + rem) + letters;
+    index = Math.floor((index - 1) / 26);
   }
+  return letters;
+}
+
+function emptyWorkbook(name) {
+  return {
+    fileName: name,
+    fileId: null,
+    runId: null,
+    sheets: [{ name: "Sheet1", cells: {}, rows: 1, cols: 1 }],
+    active: 0
+  };
+}
+
+function setWorkbook(workbook) {
+  state.workbook = workbook;
+  state.selected = "A1";
+  $("workbookTitle").textContent = workbook.fileName || "untitled";
+  renderSheetTabs();
+  renderGrid();
+}
+
+function renderSheetTabs() {
+  const target = $("sheetTabs");
+  target.innerHTML = "";
+  const wb = state.workbook;
+  if (!wb) return;
+  wb.sheets.slice(0, 15).forEach((sheet, index) => {
+    const tab = document.createElement("button");
+    tab.className = `sheet-tab${index === wb.active ? " active" : ""}`;
+    tab.textContent = sheet.name;
+    tab.addEventListener("click", () => {
+      wb.active = index;
+      state.selected = "A1";
+      renderSheetTabs();
+      renderGrid();
+    });
+    target.appendChild(tab);
+  });
+}
+
+const GRID_MAX_ROWS = 200;
+const GRID_MAX_COLS = 40;
+
+function renderGrid() {
+  const table = $("grid");
+  table.innerHTML = "";
+  const wb = state.workbook;
+  if (!wb) return;
+  const sheet = wb.sheets[wb.active] || wb.sheets[0];
+  // Always render a comfortable viewport, up to the preview caps.
+  const rows = Math.max(40, Math.min(sheet.rows || 1, GRID_MAX_ROWS));
+  const cols = Math.max(12, Math.min(sheet.cols || 1, GRID_MAX_COLS));
+
+  const head = document.createElement("tr");
+  const corner = document.createElement("th");
+  corner.className = "corner rowhead";
+  head.appendChild(corner);
+  for (let c = 1; c <= cols; c++) {
+    const th = document.createElement("th");
+    th.textContent = columnToLetters(c);
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+
+  for (let r = 1; r <= rows; r++) {
+    const tr = document.createElement("tr");
+    const rowhead = document.createElement("th");
+    rowhead.className = "rowhead";
+    rowhead.textContent = r;
+    tr.appendChild(rowhead);
+    for (let c = 1; c <= cols; c++) {
+      const address = `${columnToLetters(c)}${r}`;
+      const td = document.createElement("td");
+      td.dataset.addr = address;
+      const cell = sheet.cells[address];
+      if (cell) {
+        if (cell.v !== undefined && cell.v !== null) {
+          td.textContent = String(cell.v);
+          if (typeof cell.v === "number") td.classList.add("num");
+        } else if (cell.f) {
+          td.textContent = cell.f;
+          td.classList.add("fonly");
+        }
+      }
+      if (address === state.selected) td.classList.add("sel");
+      td.addEventListener("click", () => selectCell(address, sheet.cells[address]));
+      tr.appendChild(td);
+    }
+    table.appendChild(tr);
+  }
+  const shown = Object.keys(sheet.cells || {}).length;
+  $("gridStatus").textContent = `${sheet.name}: ${shown} cell${shown === 1 ? "" : "s"} loaded`
+    + (shown >= 20000 ? " (preview capped)" : "");
+  selectCell(state.selected, (sheet.cells || {})[state.selected]);
+}
+
+function selectCell(address, cell) {
+  state.selected = address;
+  $("nameBox").textContent = address;
+  $("formulaBar").value = cell ? (cell.f || (cell.v !== undefined && cell.v !== null ? String(cell.v) : "")) : "";
+  for (const td of $("grid").querySelectorAll("td.sel")) td.classList.remove("sel");
+  const target = $("grid").querySelector(`td[data-addr="${address}"]`);
+  if (target) target.classList.add("sel");
+}
+
+async function openWorkbookFile(file) {
+  try {
+    setStatus("Uploading file...");
+    const uploaded = await uploadFile(file);
+    state.pendingFileId = uploaded.fileId;
+    await loadWorkbookFromFileId(uploaded.fileId, uploaded.filename || file.name);
+    setStatus(`Loaded ${file.name}.`);
+  } catch (error) {
+    setStatus(`ERROR: ${error.message || error}`);
+  }
+}
+
+async function loadWorkbookFromFileId(fileId, filename) {
+  const response = await authFetch(`/api/spreadsheets/workbook/${encodeURIComponent(fileId)}/sheet-data`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setStatus(body.error || `no grid preview for ${filename} (HTTP ${response.status})`);
+    if (!state.workbook) setWorkbook(emptyWorkbook(filename));
+    return;
+  }
+  setWorkbook({
+    fileName: filename || body.filename || "workbook.xlsx",
+    fileId,
+    runId: null,
+    sheets: body.sheets,
+    active: 0,
+    truncated: body.truncated
+  });
+}
+
+async function loadWorkbookFromRun(runId, artifact) {
+  const query = artifact ? `?artifact=${encodeURIComponent(artifact)}` : "";
+  const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(runId)}/sheet-data${query}`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setStatus(body.error || `no result workbook for run (HTTP ${response.status})`);
+    return false;
+  }
+  setWorkbook({
+    fileName: body.filename || "result.xlsx",
+    fileId: null,
+    runId,
+    sheets: body.sheets,
+    active: 0,
+    truncated: body.truncated
+  });
+  return true;
+}
+
+async function exportWorkbook() {
+  const wb = state.workbook;
+  if (!wb) {
+    setStatus("Nothing to export yet.");
+    return;
+  }
+  let url;
+  if (wb.runId) url = `/api/spreadsheets/${encodeURIComponent(wb.runId)}/download`;
+  else if (wb.fileId) url = `/api/spreadsheets/workbook/${encodeURIComponent(wb.fileId)}/download`;
+  if (!url) {
+    setStatus("This sheet has no backing file to export.");
+    return;
+  }
+  const response = await authFetch(url);
+  if (!response.ok) {
+    setStatus(`export failed: HTTP ${response.status}`);
+    return;
+  }
+  const blob = await response.blob();
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = wb.fileName || "workbook.xlsx";
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+}
+
+// ---- Chat transcript -------------------------------------------------------
+function addMessage(kind, text) {
+  const entry = document.createElement("div");
+  entry.className = `msg ${kind}`;
+  entry.textContent = text;
+  $("transcript").appendChild(entry);
+  $("transcript").scrollTop = $("transcript").scrollHeight;
+  return entry;
+}
+
+function addDownloadButtons(target, run) {
+  const wrap = document.createElement("div");
+  wrap.className = "dl";
+  const add = (label, url) => {
+    const button = document.createElement("button");
+    button.className = "secondary";
+    button.textContent = label;
+    button.addEventListener("click", () => downloadUrl(url));
+    wrap.appendChild(button);
+  };
+  if (run.downloadUrl) add("Download workbook", api(run.downloadUrl));
+  for (const artifact of run.artifacts || []) {
+    add(`Download ${artifact}`, api(`/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`));
+  }
+  if (wrap.children.length) target.appendChild(wrap);
 }
 
 async function downloadUrl(url) {
@@ -254,101 +460,50 @@ async function downloadUrl(url) {
   URL.revokeObjectURL(anchor.href);
 }
 
-function renderRun(run) {
-  state.runId = run.runId;
-  const lines = [
-    `runId: ${run.runId}`,
-    `status: ${run.status}`,
-    `mode: ${run.mode}`,
-    run.prompt ? `prompt: ${run.prompt}` : ""
-  ].filter(Boolean);
-  if (run.summary) lines.push("", "summary:", String(run.summary));
-  if (run.error) lines.push("", `error: ${run.error}`);
-  $("output").textContent = lines.join("\n");
-  renderDownloads(run);
-}
-
-async function pollRun(runId) {
+async function pollRun(runId, statusMessage) {
   state.polling = true;
+  let last = null;
   while (state.polling && state.runId === runId) {
-    const response = await authFetch(api(`/api/spreadsheets/${runId}`));
+    const response = await authFetch(`/api/spreadsheets/${runId}`);
     if (!response.ok) {
-      setStatus(`status failed: HTTP ${response.status}`);
+      statusMessage(`status failed: HTTP ${response.status}`);
       state.polling = false;
-      return;
+      return null;
     }
     const run = await response.json();
-    renderRun(run);
-    setStatus(`Run ${runId.slice(0, 8)}: ${run.status}`);
+    if (run.status !== last) {
+      last = run.status;
+      statusMessage(`Run ${runId.slice(0, 8)}: ${run.status}…`);
+    }
     if (["completed", "failed", "cancelled"].includes(run.status)) {
       state.polling = false;
-      return;
+      return run;
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   state.polling = false;
-}
-
-async function submitRun() {
-  const prompt = $("prompt").value.trim();
-  if (!prompt) {
-    setStatus("Enter a prompt first.");
-    return;
-  }
-  $("submit").disabled = true;
-  try {
-    await ensureToken();
-    setStatus("Preparing input...");
-    let initFile;
-    const file = $("file").files && $("file").files[0];
-    if (file) {
-      const uploaded = await uploadFile(file);
-      initFile = uploaded.fileId;
-    }
-    setStatus("Submitting run...");
-    const body = {
-      prompt,
-      mode: $("mode").value === "ask" ? "ask" : "action"
-    };
-    if (initFile) body.initFile = initFile;
-    if ($("model").value.trim()) body.model = $("model").value.trim();
-    const response = await authFetch(api("/api/spreadsheets"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    const submitted = await response.json();
-    if (!response.ok) throw new Error(submitted.error || `HTTP ${response.status}`);
-    renderRun({
-      runId: submitted.runId,
-      status: submitted.status || "queued",
-      mode: body.mode,
-      prompt
-    });
-    setStatus(`Queued ${submitted.runId}`);
-    await pollRun(submitted.runId);
-    await loadRuns();
-  } catch (error) {
-    setStatus(`ERROR: ${error.message || error}`);
-  } finally {
-    $("submit").disabled = false;
-  }
+  return null;
 }
 
 async function loadRuns() {
   try {
-    const response = await authFetch(api("/api/spreadsheets/runs"));
+    const response = await authFetch("/api/spreadsheets/runs");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
     const list = $("runs");
+    list.hidden = false;
     list.innerHTML = "";
-    for (const run of body.runs || []) {
+    for (const run of (body.runs || []).slice(0, 10)) {
       const item = document.createElement("li");
       const link = document.createElement("a");
-      link.textContent = `${run.runId.slice(0, 8)} · ${run.status} · ${String(run.prompt || "").slice(0, 70)}`;
+      link.textContent = `${run.runId.slice(0, 8)} · ${run.status} · ${String(run.prompt || "").slice(0, 40)}`;
       link.addEventListener("click", async () => {
-        const statusResponse = await authFetch(api(`/api/spreadsheets/${run.runId}`));
-        if (statusResponse.ok) renderRun(await statusResponse.json());
+        const statusResponse = await authFetch(`/api/spreadsheets/${run.runId}`);
+        if (statusResponse.ok) {
+          const run = await statusResponse.json();
+          addMessage("sys", `Loaded run ${run.runId.slice(0, 8)} (${run.status}).`);
+          if (run.status === "completed") await loadWorkbookFromRun(run.runId);
+        }
       });
       item.appendChild(link);
       list.appendChild(item);
@@ -363,6 +518,65 @@ async function loadRuns() {
   }
 }
 
+async function submitRun(promptText) {
+  const prompt = (promptText !== undefined ? promptText : $("prompt").value).trim();
+  if (!prompt) {
+    setStatus("Enter a prompt first.");
+    return;
+  }
+  $("send").disabled = true;
+  addMessage("user", prompt);
+  if (promptText !== undefined) $("prompt").value = "";
+  const statusMessage = addMessage("sys", "Submitting…");
+  try {
+    await ensureToken();
+    let initFile;
+    const file = $("file").files && $("file").files[0];
+    if (file) {
+      statusMessage.textContent = "Uploading attachment…";
+      const uploaded = await uploadFile(file);
+      initFile = uploaded.fileId;
+      $("file").value = "";
+    } else if (state.pendingFileId) {
+      initFile = state.pendingFileId;
+    }
+    const body = {
+      prompt,
+      mode: $("mode").value === "ask" ? "ask" : "action"
+    };
+    if (initFile) body.initFile = initFile;
+    if ($("model").value) body.model = $("model").value;
+    statusMessage.textContent = "Queued…";
+    const response = await authFetch("/api/spreadsheets", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const submitted = await response.json();
+    if (!response.ok) throw new Error(submitted.error || `HTTP ${response.status}`);
+    state.runId = submitted.runId;
+    const run = await pollRun(submitted.runId, (m) => { statusMessage.textContent = m; });
+    if (!run) return;
+    if (run.status === "completed") {
+      statusMessage.className = "msg done";
+      statusMessage.textContent = run.summary ? String(run.summary).slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
+      addDownloadButtons(statusMessage, run);
+      const loaded = await loadWorkbookFromRun(run.runId);
+      if (loaded) addMessage("sys", "Result workbook loaded into the grid.");
+    } else {
+      statusMessage.className = "msg err";
+      statusMessage.textContent = `Run ${run.status}: ${run.error || "no details"}`;
+    }
+    loadCredits();
+    loadRuns();
+  } catch (error) {
+    statusMessage.className = "msg err";
+    statusMessage.textContent = `ERROR: ${error.message || error}`;
+  } finally {
+    $("send").disabled = false;
+  }
+}
+
 // ---- Credit billing (Stripe Checkout) -------------------------------------
 function setBillingStatus(message) {
   $("billingStatus").textContent = message;
@@ -371,7 +585,7 @@ function setBillingStatus(message) {
 async function buyPack(packId) {
   setBillingStatus("Starting checkout…");
   try {
-    const response = await authFetch(api("/v1/billing/checkout"), {
+    const response = await authFetch("/v1/billing/checkout", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ packId })
@@ -412,13 +626,70 @@ async function loadBilling() {
   else setBillingStatus(body.configured ? "Credits are added after payment (Stripe)." : "Billing is not enabled on this deployment yet.");
 }
 
+async function loadCredits() {
+  try {
+    const response = await authFetch("/v1/credits/balance");
+    if (!response.ok) return;
+    const body = await response.json();
+    $("creditsChip").textContent = `${body.balance} credits`;
+  } catch {
+    // chip keeps its placeholder
+  }
+}
+
+async function loadModels() {
+  try {
+    const response = await authFetch("/v1/models");
+    if (!response.ok) return;
+    const body = await response.json();
+    const select = $("model");
+    select.innerHTML = "";
+    for (const model of body.models || []) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.id;
+      select.appendChild(option);
+    }
+  } catch {
+    // run submits without a model field when empty
+  }
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
-  $("submit").addEventListener("click", submitRun);
-  $("refresh").addEventListener("click", loadRuns);
+  $("openFile").addEventListener("click", () => $("file").click());
+  $("file").addEventListener("change", () => {
+    const file = $("file").files && $("file").files[0];
+    if (file) openWorkbookFile(file);
+  });
+  $("newFile").addEventListener("click", () => {
+    state.pendingFileId = null;
+    $("file").value = "";
+    setWorkbook(emptyWorkbook("empty-sheet.xlsx"));
+    setStatus("New empty sheet. Attach or Open a file to work on real workbooks.");
+  });
+  $("exportFile").addEventListener("click", exportWorkbook);
+  $("send").addEventListener("click", () => submitRun());
+  $("prompt").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submitRun();
+    }
+  });
+  $("attach").addEventListener("click", () => $("file").click());
+  $("accountBtn").addEventListener("click", () => {
+    $("accountPanel").hidden = !$("accountPanel").hidden;
+  });
+  $("runsLink").addEventListener("click", loadRuns);
+  for (const chip of document.querySelectorAll(".chip-prompt")) {
+    chip.addEventListener("click", () => submitRun(chip.dataset.prompt));
+  }
+  setWorkbook(emptyWorkbook("empty-sheet.xlsx"));
   if (AUTH_ENABLED) {
     await setupAuth();
     await handleAuthRedirect();
   }
+  loadCredits();
+  loadModels();
   loadBilling();
   loadRuns();
 });
