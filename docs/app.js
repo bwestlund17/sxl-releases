@@ -324,6 +324,7 @@ const GRID_MAX_ROWS = 200;
 const GRID_MAX_COLS = 40;
 
 function renderGrid() {
+  commitActiveEditor();
   const table = $("grid");
   table.innerHTML = "";
   const wb = state.workbook;
@@ -333,6 +334,7 @@ function renderGrid() {
   // Always render a comfortable viewport, up to the preview caps.
   const rows = Math.max(40, Math.min(sheet.rows || 1, GRID_MAX_ROWS));
   const cols = Math.max(12, Math.min(sheet.cols || 1, GRID_MAX_COLS));
+  state.rendered = { rows, cols };
 
   const head = document.createElement("tr");
   const corner = document.createElement("th");
@@ -370,8 +372,13 @@ function renderGrid() {
       }
       if (pendingEdit) td.classList.add("pending");
       if (address === state.selected) td.classList.add("sel");
-      td.addEventListener("click", () => selectCell(address, effectiveCell(sheet, address)));
-      td.addEventListener("dblclick", () => editCell(address));
+      td.addEventListener("click", () => {
+        // Excel-like: clicking a cell moves keyboard focus to the grid so
+        // arrows/type-to-edit work immediately.
+        $("gridScroll").focus({ preventScroll: true });
+        selectCell(address, effectiveCell(sheet, address));
+      });
+      td.addEventListener("dblclick", () => beginCellEdit(address));
       tr.appendChild(td);
     }
     table.appendChild(tr);
@@ -390,40 +397,120 @@ function effectiveCell(sheet, address) {
   return (sheet.cells || {})[address];
 }
 
-// Double-click editing: a transient input inside the cell; Enter/blur stages
-// the edit, Esc cancels.
-function editCell(address) {
+// Excel-style keyboard navigation across the rendered viewport.
+function addressParts(address) {
+  const match = /^([A-Z]+)(\d+)$/.exec(address || "");
+  return match ? { letters: match[1], row: Number(match[2]) } : null;
+}
+function colToIndex(letters) {
+  return letters.split("").reduce((sum, ch) => sum * 26 + (ch.charCodeAt(0) - 64), 0);
+}
+function moveSelection(dr, dc) {
+  commitActiveEditor();
+  const current = addressParts(state.selected);
+  const rendered = state.rendered || { rows: 40, cols: 12 };
+  if (!current) return;
+  const col = Math.min(rendered.cols, Math.max(1, colToIndex(current.letters) + dc));
+  const row = Math.min(rendered.rows, Math.max(1, current.row + dr));
+  const address = `${columnToLetters(col)}${row}`;
+  const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
+  selectCell(address, sheet ? effectiveCell(sheet, address) : null);
+  const td = $("grid").querySelector(`td[data-addr="${address}"]`);
+  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+// Cell editing. Three entries: double-click / F2 edit the existing content,
+// typing a printable character REPLACES it with that character (Excel).
+// Enter or blur commits into the staged edits; Escape cancels.
+//
+// Commit does NOT rely on blur alone: some embedding contexts never dispatch
+// blur/focusout (window without OS focus), so the editor is tracked and
+// commitActiveEditor() runs before every navigation/render path.
+let activeEditor = null;
+function commitActiveEditor() {
+  const editor = activeEditor;
+  if (editor) editor.commit();
+}
+
+function beginCellEdit(address, initial) {
+  commitActiveEditor();
   const td = $("grid").querySelector(`td[data-addr="${address}"]`);
   const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
   if (!td || !sheet) return;
   const current = effectiveCell(sheet, address);
-  const initial = current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
+  const existing = current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
+  const text = initial !== undefined ? initial : existing;
   td.textContent = "";
   const input = document.createElement("input");
   input.className = "cell-editor";
-  input.value = initial;
+  input.value = text;
   td.appendChild(input);
   input.focus();
-  input.setSelectionRange(initial.length, initial.length);
+  input.setSelectionRange(text.length, text.length);
+  let cancelled = false;
+  let done = false;
   const commit = () => {
-    const text = input.value.trim();
-    if (text === initial) {
+    const stale = done || cancelled || !activeEditor || activeEditor.input !== input;
+    activeEditor = null;
+    if (stale) return;
+    done = true;
+    const value = input.value.trim();
+    if (value === existing) {
       renderGrid();
       return;
     }
-    stageEdit(address, text.startsWith("=") ? { formula: text } : { value: text });
+    stageEdit(address, value.startsWith("=") ? { formula: value } : { value });
     selectCell(address, effectiveCell(sheet, address));
   };
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      input.blur();
+      event.stopPropagation();
+      commit();
+      moveSelection(1, 0);
+      $("gridScroll").focus({ preventScroll: true });
     } else if (event.key === "Escape") {
-      input.removeEventListener("blur", commit);
+      event.preventDefault();
+      event.stopPropagation();
+      cancelled = true;
+      activeEditor = null;
       renderGrid();
+      $("gridScroll").focus({ preventScroll: true });
+    } else if (event.key.startsWith("Arrow") || event.key === "Tab") {
+      // Keep the caret in the editor; do not navigate the grid.
+      event.stopPropagation();
     }
   });
+  // Blur commit still works for real focused windows; the tracked paths
+  // above cover contexts where the browser never dispatches blur.
   input.addEventListener("blur", commit);
+  activeEditor = { input, commit };
+}
+
+// Grid keyboard routing: navigation + type-to-edit when the grid has focus
+// and no cell editor input is active.
+function onGridKey(event) {
+  const tag = (event.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  switch (event.key) {
+    case "ArrowUp": event.preventDefault(); return moveSelection(-1, 0);
+    case "ArrowDown": event.preventDefault(); return moveSelection(1, 0);
+    case "ArrowLeft": event.preventDefault(); return moveSelection(0, -1);
+    case "ArrowRight": event.preventDefault(); return moveSelection(0, 1);
+    case "Enter": event.preventDefault(); return moveSelection(1, 0);
+    case "Tab": event.preventDefault(); return moveSelection(0, event.shiftKey ? -1 : 1);
+    case "F2": event.preventDefault(); return beginCellEdit(state.selected);
+    case "Delete":
+    case "Backspace":
+      event.preventDefault();
+      return stageEdit(state.selected, { value: "" });
+    default:
+      if (event.key.length === 1) {
+        event.preventDefault();
+        beginCellEdit(state.selected, event.key);
+      }
+  }
 }
 
 // Formula-bar editing: Enter stages, Esc restores the current value.
@@ -851,6 +938,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     else if (wb.fileId) await loadWorkbookFromFileId(wb.fileId, wb.fileName);
     else setStatus("Nothing to refresh yet.");
   });
+  $("gridScroll").addEventListener("keydown", onGridKey);
   $("formulaBar").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();

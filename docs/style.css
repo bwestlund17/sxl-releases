@@ -77,7 +77,7 @@ a { color: #0d6b3f; }
 /* ---- workspace ---- */
 #workspace { flex: 1; display: flex; min-height: 0; }
 #gridPane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-#gridScroll { flex: 1; overflow: auto; background: #ffffff; }
+#gridScroll { flex: 1; overflow: auto; background: #ffffff; outline: none; }
 #grid { border-collapse: collapse; table-layout: fixed; }
 #grid th, #grid td {
   border: 1px solid #e2e5e9; padding: 0 5px; height: 22px;
@@ -112,6 +112,7 @@ a { color: #0d6b3f; }
 }
 .mini-btn.primary { background: #0d6b3f; border-color: #0d6b3f; color: #ffffff; }
 #pendingWrap { display: inline-flex; align-items: center; gap: 6px; color: #b7791f; font-weight: 600; }
+#pendingWrap[hidden] { display: none; }
 #statusbar {
   display: flex; align-items: center; gap: 12px;
   padding: 3px 10px; border-top: 1px solid #d0d7de;
