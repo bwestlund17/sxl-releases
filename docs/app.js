@@ -336,6 +336,35 @@ function renderGrid() {
   const cols = Math.max(12, Math.min(sheet.cols || 1, GRID_MAX_COLS));
   state.rendered = { rows, cols };
 
+  // Formula preview resolver: staged edits override stored cells; memoized,
+  // cycle-guarded, whitelist of typical Excel functions (see engine below).
+  const formulaMemo = new Map();
+  const formulaVisiting = new Set();
+  const resolveFormulaCell = (address) => {
+    if (formulaMemo.has(address)) return formulaMemo.get(address);
+    if (formulaVisiting.has(address)) return formulaError(FORMULA_ERRORS.circ);
+    formulaVisiting.add(address);
+    let value = 0;
+    try {
+      const stagedEdit = pending && pending.get(address);
+      const stored = (sheet.cells || {})[address];
+      if (stagedEdit) {
+        value = stagedEdit.formula ? computeStagedFormula(stagedEdit.formula) : stagedEdit.value;
+      } else if (stored) {
+        if (stored.v !== undefined && stored.v !== null) value = stored.v;
+        else if (stored.f) value = computeStagedFormula(stored.f);
+        else value = 0;
+      }
+    } catch (error) {
+      value = isFormulaError(error) ? error : formulaError(FORMULA_ERRORS.value);
+    }
+    formulaVisiting.delete(address);
+    formulaMemo.set(address, value);
+    return value;
+  };
+  const computeStagedFormula = (formula) =>
+    evalFormulaNode(parseFormulaTokens(tokenizeFormula(formula.replace(/^=/, ""))), resolveFormulaCell);
+
   const head = document.createElement("tr");
   const corner = document.createElement("th");
   corner.className = "corner rowhead";
@@ -366,8 +395,19 @@ function renderGrid() {
           td.textContent = String(cell.v);
           if (typeof cell.v === "number") td.classList.add("num");
         } else if (cell.f) {
-          td.textContent = cell.f;
-          td.classList.add("fonly");
+          // Formula preview: compute typical formulas client-side; unsupported
+          // ones (#NAME?) render as literal text instead of a fake value.
+          const computed = computeStagedFormula(cell.f);
+          if (isFormulaError(computed) && computed.__err === FORMULA_ERRORS.name) {
+            td.textContent = cell.f;
+            td.classList.add("fonly");
+          } else if (isFormulaError(computed)) {
+            td.textContent = computed.__err;
+            td.classList.add("fonly");
+          } else {
+            td.textContent = formulaDisplay(computed);
+            if (typeof computed === "number") td.classList.add("num");
+          }
         }
       }
       if (pendingEdit) td.classList.add("pending");
@@ -966,3 +1006,355 @@ window.addEventListener("DOMContentLoaded", async () => {
   loadBilling();
   loadRuns();
 });
+
+// ---- Formula preview engine (pure, no DOM) --------------------------------
+// The grid computes TYPICAL Excel formulas client-side so staged edits show
+// real values instead of literal "=..." text (Apply still recomputes in real
+// Excel, which stays the source of truth). Whitelisted functions only; an
+// unsupported formula renders as its literal text rather than a fake value.
+
+const FORMULA_ERRORS = {
+  div0: "#DIV/0!", value: "#VALUE!", name: "#NAME?", ref: "#REF!", circ: "#CIRC!", num: "#NUM!"
+};
+const FORMULA_MAX_RANGE_CELLS = 10_000;
+
+function formulaError(text) { return { __err: text }; }
+function isFormulaError(value) { return value !== null && typeof value === "object" && "__err" in value; }
+
+function formulaToNumber(value) {
+  if (isFormulaError(value)) return value;
+  if (typeof value === "number") return value;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "string") {
+    const num = Number(value);
+    return value.trim() !== "" && !Number.isNaN(num) ? num : formulaError(FORMULA_ERRORS.value);
+  }
+  return formulaError(FORMULA_ERRORS.value);
+}
+
+function formulaCompare(a, b) {
+  if (typeof a === "number" && typeof b === "number") return a === b ? 0 : (a < b ? -1 : 1);
+  const rank = (v) => (typeof v === "number" ? 0 : typeof v === "string" ? 1 : 2);
+  if (rank(a) !== rank(b)) return rank(a) < rank(b) ? -1 : 1;
+  if (typeof a === "string") return a.toLowerCase() === b.toLowerCase() ? 0 : (a.toLowerCase() < b.toLowerCase() ? -1 : 1);
+  return a === b ? 0 : (a < b ? -1 : 1);
+}
+
+function tokenizeFormula(text) {
+  const tokens = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === " ") { i++; continue; }
+    if (/[0-9.]/.test(ch)) {
+      const match = /^[0-9]*\.?[0-9]+([eE][+-]?[0-9]+)?/.exec(text.slice(i));
+      tokens.push({ type: "num", value: Number(match[0]) });
+      i += match[0].length;
+    } else if (ch === '"') {
+      const end = text.indexOf('"', i + 1);
+      if (end === -1) throw formulaError(FORMULA_ERRORS.value);
+      tokens.push({ type: "str", value: text.slice(i + 1, end) });
+      i = end + 1;
+    } else if (/[A-Za-z_$]/.test(ch)) {
+      const match = /^[A-Za-z_$][A-Za-z0-9_$.]*/.exec(text.slice(i));
+      tokens.push({ type: "ident", value: match[0].replace(/\$/g, "").toUpperCase() });
+      i += match[0].length;
+    } else if ("+-*/^&%(),:<>=".includes(ch)) {
+      if (ch === "<" && text[i + 1] === ">") { tokens.push({ type: "op", value: "<>" }); i += 2; continue; }
+      if (ch === "<" && text[i + 1] === "=") { tokens.push({ type: "op", value: "<=" }); i += 2; continue; }
+      if (ch === ">" && text[i + 1] === "=") { tokens.push({ type: "op", value: ">=" }); i += 2; continue; }
+      tokens.push({ type: ch === ":" || ch === "," || ch === "(" || ch === ")" ? "punct" : "op", value: ch });
+      i++;
+    } else {
+      throw formulaError(FORMULA_ERRORS.value);
+    }
+  }
+  return tokens;
+}
+
+// Recursive-descent parse → AST. Whitespace-insensitive; precedence per Excel
+// (comparison < concat < +- < */ < ^ < unary < percent).
+function parseFormulaTokens(tokens) {
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const take = () => tokens[pos++];
+  function parseExpr() { return parseCompare(); }
+  function parseCompare() {
+    let left = parseConcat();
+    while (peek() && peek().type === "op" && ["=", "<>", "<", ">", "<=", ">="].includes(peek().value)) {
+      const op = take().value;
+      left = { type: "binary", op, left, right: parseConcat() };
+    }
+    return left;
+  }
+  function parseConcat() {
+    let left = parseAdd();
+    while (peek() && peek().type === "op" && peek().value === "&") {
+      take();
+      left = { type: "binary", op: "&", left, right: parseAdd() };
+    }
+    return left;
+  }
+  function parseAdd() {
+    let left = parseMul();
+    while (peek() && peek().type === "op" && (peek().value === "+" || peek().value === "-")) {
+      const op = take().value;
+      left = { type: "binary", op, left, right: parseMul() };
+    }
+    return left;
+  }
+  function parseMul() {
+    let left = parsePow();
+    while (peek() && peek().type === "op" && (peek().value === "*" || peek().value === "/")) {
+      const op = take().value;
+      left = { type: "binary", op, left, right: parsePow() };
+    }
+    return left;
+  }
+  function parsePow() {
+    let left = parseUnary();
+    while (peek() && peek().type === "op" && peek().value === "^") {
+      take();
+      left = { type: "binary", op: "^", left, right: parseUnary() };
+    }
+    return left;
+  }
+  function parseUnary() {
+    if (peek() && peek().type === "op" && (peek().value === "-" || peek().value === "+")) {
+      const op = take().value;
+      return { type: "unary", op, value: parseUnary() };
+    }
+    return parsePostfix();
+  }
+  function parsePostfix() {
+    let value = parsePrimary();
+    while (peek() && peek().type === "op" && peek().value === "%") {
+      take();
+      value = { type: "percent", value };
+    }
+    return value;
+  }
+  function parsePrimary() {
+    const token = take();
+    if (!token) throw formulaError(FORMULA_ERRORS.value);
+    if (token.type === "num") return { type: "num", value: token.value };
+    if (token.type === "str") return { type: "str", value: token.value };
+    if (token.type === "punct" && token.value === "(") {
+      const inner = parseExpr();
+      const close = take();
+      if (!close || close.value !== ")") throw formulaError(FORMULA_ERRORS.value);
+      return inner;
+    }
+    if (token.type === "ident") {
+      if (token.value === "TRUE") return { type: "bool", value: true };
+      if (token.value === "FALSE") return { type: "bool", value: false };
+      if (peek() && peek().type === "punct" && peek().value === "(") {
+        take();
+        const args = [];
+        if (peek() && peek().value === ")") take();
+        else {
+          for (;;) {
+            args.push(parseExpr());
+            const next = take();
+            if (!next || next.value === ")") break;
+            if (next.value !== ",") throw formulaError(FORMULA_ERRORS.value);
+          }
+        }
+        return { type: "call", name: token.value, args };
+      }
+      // Range: cell ":" cell, or whole-column A:A (rows bounded by the
+      // preview row cap at evaluation time).
+      if (/^[A-Z]{1,3}$/.test(token.value) && peek() && peek().type === "punct" && peek().value === ":") {
+        take();
+        const second = take();
+        if (!second || second.type !== "ident" || !/^[A-Z]{1,3}$/.test(second.value)) throw formulaError(FORMULA_ERRORS.ref);
+        return { type: "range", from: token.value + "1", to: second.value + "1000" };
+      }
+      if (/^[A-Z]{1,3}[0-9]+$/.test(token.value) && peek() && peek().type === "punct" && peek().value === ":") {
+        take();
+        const second = take();
+        const toAddress = second && second.type === "ident" ? second.value : "";
+        if (!/^[A-Z]{1,3}[0-9]+$/.test(toAddress)) throw formulaError(FORMULA_ERRORS.ref);
+        return { type: "range", from: token.value, to: toAddress };
+      }
+      if (/^[A-Z]{1,3}[0-9]+$/.test(token.value)) return { type: "ref", address: token.value };
+      throw formulaError(FORMULA_ERRORS.name);
+    }
+    throw formulaError(FORMULA_ERRORS.value);
+  }
+  const ast = parseExpr();
+  if (pos !== tokens.length) throw formulaError(FORMULA_ERRORS.value);
+  return ast;
+}
+
+// Every function receives the evaluated args array (ranges pre-expanded to
+// flat value arrays). Arg errors are propagated by evalCall before dispatch,
+// except COUNT/COUNTA which ignore them.
+function num(value) {
+  return typeof value === "number" ? value : Number(value) || 0;
+}
+const FORMULA_FUNCTIONS = {
+  SUM: (args) => args.flatMap(flattenNumbers).reduce((s, v) => s + v, 0),
+  AVERAGE: (args) => {
+    const nums = args.flatMap(flattenNumbers);
+    return nums.length ? nums.reduce((s, v) => s + v, 0) / nums.length : formulaError(FORMULA_ERRORS.div0);
+  },
+  MIN: (args) => {
+    const nums = args.flatMap(flattenNumbers);
+    return nums.length ? Math.min(...nums) : 0;
+  },
+  MAX: (args) => {
+    const nums = args.flatMap(flattenNumbers);
+    return nums.length ? Math.max(...nums) : 0;
+  },
+  COUNT: (args) => args.flatMap(flattenNumbers).filter((v) => typeof v === "number").length,
+  COUNTA: (args) => args.flatMap(flattenValues).filter((v) => v !== null && v !== undefined && v !== "").length,
+  PRODUCT: (args) => args.flatMap(flattenNumbers).reduce((p, v) => p * v, 1),
+  MEDIAN: (args) => {
+    const nums = args.flatMap(flattenNumbers).sort((a, b) => a - b);
+    if (!nums.length) return formulaError(FORMULA_ERRORS.num);
+    const mid = Math.floor(nums.length / 2);
+    return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+  },
+  AND: (args) => args.every(isTrue),
+  OR: (args) => args.some(isTrue),
+  NOT: (args) => !isTrue(args[0]),
+  ROUND: (args) => {
+    const factor = Math.pow(10, num(args[1]) || 0);
+    return Math.round((num(args[0]) + Number.EPSILON * Math.sign(num(args[0]) || 1)) * factor) / factor;
+  },
+  ROUNDUP: (args) => {
+    const factor = Math.pow(10, num(args[1]) || 0);
+    return num(args[0]) >= 0 ? Math.ceil(num(args[0]) * factor) / factor : Math.floor(num(args[0]) * factor) / factor;
+  },
+  ROUNDDOWN: (args) => {
+    const factor = Math.pow(10, num(args[1]) || 0);
+    return num(args[0]) >= 0 ? Math.floor(num(args[0]) * factor) / factor : Math.ceil(num(args[0]) * factor) / factor;
+  },
+  ABS: (args) => Math.abs(num(args[0])),
+  SQRT: (args) => (num(args[0]) < 0 ? formulaError(FORMULA_ERRORS.num) : Math.sqrt(num(args[0]))),
+  POWER: (args) => Math.pow(num(args[0]), num(args[1])),
+  MOD: (args) => (num(args[1]) === 0 ? formulaError(FORMULA_ERRORS.div0) : num(args[0]) - num(args[1]) * Math.floor(num(args[0]) / num(args[1]))),
+  INT: (args) => Math.floor(num(args[0]))
+};
+function flattenNumbers(value) {
+  if (Array.isArray(value)) return value.flatMap(flattenNumbers);
+  if (typeof value === "number") return [value];
+  if (typeof value === "boolean") return [value ? 1 : 0];
+  if (typeof value === "string") { const num = Number(value); return value.trim() !== "" && !Number.isNaN(num) ? [num] : []; }
+  return [];
+}
+function flattenValues(value) {
+  return Array.isArray(value) ? value.flatMap(flattenValues) : [value];
+}
+function isTrue(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") return value.toUpperCase() === "TRUE";
+  return false;
+}
+
+// Evaluate a formula AST against a cell resolver. Range args expand eagerly
+// (bounded); IF evaluates lazily so the untaken branch cannot error.
+function evalFormulaNode(node, resolve) {
+  try {
+    return evalValue(node, resolve);
+  } catch (error) {
+    if (isFormulaError(error)) return error;
+    throw error;
+  }
+}
+function evalValue(node, resolve) {
+  switch (node.type) {
+    case "num": return node.value;
+    case "str": return node.value;
+    case "bool": return node.value;
+    case "ref": return resolve(node.address);
+    case "range": {
+      const from = addressParts(node.from);
+      const to = addressParts(node.to);
+      if (!from || !to) throw formulaError(FORMULA_ERRORS.ref);
+      const c1 = colToIndex(from.letters), c2 = colToIndex(to.letters);
+      const r1 = from.row, r2 = to.row;
+      const colMin = Math.min(c1, c2), colMax = Math.max(c1, c2);
+      const rowMin = Math.min(r1, r2), rowMax = Math.max(r1, r2);
+      if ((colMax - colMin + 1) * (rowMax - rowMin + 1) > FORMULA_MAX_RANGE_CELLS) throw formulaError(FORMULA_ERRORS.ref);
+      const values = [];
+      for (let r = rowMin; r <= rowMax; r++) {
+        for (let c = colMin; c <= colMax; c++) values.push(resolve(`${columnToLetters(c)}${r}`));
+      }
+      return values;
+    }
+    case "unary": {
+      const num = formulaToNumber(evalValue(node.value, resolve));
+      if (isFormulaError(num)) return num;
+      return node.op === "-" ? -num : num;
+    }
+    case "percent": {
+      const num = formulaToNumber(evalValue(node.value, resolve));
+      return isFormulaError(num) ? num : num / 100;
+    }
+    case "binary": return evalBinary(node, resolve);
+    case "call": return evalCall(node, resolve);
+    default: throw formulaError(FORMULA_ERRORS.value);
+  }
+}
+function evalBinary(node, resolve) {
+  if (["=", "<>", "<", ">", "<=", ">="].includes(node.op)) {
+    const left = evalValue(node.left, resolve), right = evalValue(node.right, resolve);
+    if (isFormulaError(left)) return left;
+    if (isFormulaError(right)) return right;
+    const cmp = formulaCompare(left, right);
+    switch (node.op) {
+      case "=": return cmp === 0;
+      case "<>": return cmp !== 0;
+      case "<": return cmp < 0;
+      case ">": return cmp > 0;
+      case "<=": return cmp <= 0;
+      case ">=": return cmp >= 0;
+    }
+  }
+  // String concatenation happens on display strings, never numeric coercion.
+  if (node.op === "&") {
+    const left = evalValue(node.left, resolve);
+    if (isFormulaError(left)) return left;
+    const right = evalValue(node.right, resolve);
+    if (isFormulaError(right)) return right;
+    return formulaDisplay(left) + formulaDisplay(right);
+  }
+  const left = formulaToNumber(evalValue(node.left, resolve));
+  if (isFormulaError(left)) return left;
+  const right = formulaToNumber(evalValue(node.right, resolve));
+  if (isFormulaError(right)) return right;
+  switch (node.op) {
+    case "+": return left + right;
+    case "-": return left - right;
+    case "*": return left * right;
+    case "/": return right === 0 ? formulaError(FORMULA_ERRORS.div0) : left / right;
+    case "^": return Math.pow(left, right);
+    default: throw formulaError(FORMULA_ERRORS.value);
+  }
+}
+function evalCall(node, resolve) {
+  // IF is lazy: the untaken branch must not be able to error.
+  if (node.name === "IF") {
+    if (node.args.length < 2 || node.args.length > 3) throw formulaError(FORMULA_ERRORS.value);
+    const condition = evalValue(node.args[0], resolve);
+    if (isFormulaError(condition)) return condition;
+    return isTrue(condition) ? evalValue(node.args[1], resolve) : (node.args[2] ? evalValue(node.args[2], resolve) : false);
+  }
+  const fn = FORMULA_FUNCTIONS[node.name];
+  if (!fn) throw formulaError(FORMULA_ERRORS.name);
+  const args = node.args.map((arg) => evalValue(arg, resolve));
+  for (const arg of args) {
+    if (isFormulaError(arg) && node.name !== "COUNT" && node.name !== "COUNTA") return arg;
+  }
+  return fn(args);
+}
+function formulaDisplay(value) {
+  if (isFormulaError(value)) return value.__err;
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
