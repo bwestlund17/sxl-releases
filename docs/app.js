@@ -289,10 +289,16 @@ function discardEdits() {
 
 function updatePendingBar() {
   const wb = state.workbook;
-  const pending = wb ? state.pending[wb.sheets[wb.active].name] : null;
-  const count = pending ? pending.size : 0;
-  $("pendingWrap").hidden = count === 0;
-  $("pendingCount").textContent = `${count} staged edit${count === 1 ? "" : "s"}`;
+  if (!wb) { $("pendingWrap").hidden = true; return; }
+  const activeName = wb.sheets[wb.active].name;
+  const activePending = state.pending[activeName];
+  const count = activePending ? activePending.size : 0;
+  const elsewhere = Object.keys(state.pending)
+    .filter((name) => name !== activeName && state.pending[name] && state.pending[name].size > 0)
+    .reduce((sum, name) => sum + state.pending[name].size, 0);
+  $("pendingWrap").hidden = count === 0 && elsewhere === 0;
+  $("pendingCount").textContent =
+    `${count} staged edit${count === 1 ? "" : "s"}` + (elsewhere > 0 ? ` (+${elsewhere} on other sheets)` : "");
 }
 
 function renderSheetTabs() {
@@ -655,7 +661,7 @@ async function submitRun(promptText, overrides = {}) {
     if (!response.ok) throw new Error(submitted.error || `HTTP ${response.status}`);
     state.runId = submitted.runId;
     const run = await pollRun(submitted.runId, (m) => { statusMessage.textContent = m; });
-    if (!run) return;
+    if (!run) return null;
     if (run.status === "completed") {
       statusMessage.className = "msg done";
       statusMessage.textContent = run.summary ? String(run.summary).slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
@@ -668,53 +674,69 @@ async function submitRun(promptText, overrides = {}) {
     }
     loadCredits();
     loadRuns();
+    return run;
   } catch (error) {
     statusMessage.className = "msg err";
     statusMessage.textContent = `ERROR: ${error.message || error}`;
+    return null;
   } finally {
     $("send").disabled = false;
   }
 }
 
-// Apply staged grid edits: the audited deterministic --set path. Chains from
-// a run result by promoting it to a fileId first (the stored upload stays
-// pristine; every run's output is a new version).
+// Apply staged grid edits: the audited deterministic --set path. The CLI is
+// single-sheet per run, so staged sheets apply as sequential chained runs
+// (active sheet first): each result becomes the next run's input via
+// from-run promotion, and every run is its own revertible audit record.
 async function applyEdits() {
   const wb = state.workbook;
   if (!wb) return;
-  const sheetName = wb.sheets[wb.active].name;
-  const pending = state.pending[sheetName];
-  if (!pending || pending.size === 0) return;
-  let fileId = wb.fileId;
-  if (!fileId && wb.runId) {
-    setStatus("Preparing result workbook…");
-    try {
-      const response = await authFetch("/api/spreadsheets/workbook/from-run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ runId: wb.runId })
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-      fileId = body.fileId;
-    } catch (error) {
-      setStatus(`Could not chain from the result: ${error.message || error}`);
+  const activeName = wb.sheets[wb.active].name;
+  const sheetNames = Object.keys(state.pending)
+    .filter((name) => state.pending[name] && state.pending[name].size > 0)
+    .sort((a, b) => (a === activeName ? -1 : b === activeName ? 1 : 0));
+  if (!sheetNames.length) return;
+  for (const sheetName of sheetNames) {
+    const pending = state.pending[sheetName];
+    if (!pending || pending.size === 0) continue;
+    let fileId = state.workbook && state.workbook.fileId;
+    if (!fileId && state.workbook && state.workbook.runId) {
+      setStatus(`Preparing result workbook for ${sheetName}…`);
+      try {
+        const response = await authFetch("/api/spreadsheets/workbook/from-run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ runId: state.workbook.runId })
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        fileId = body.fileId;
+      } catch (error) {
+        setStatus(`Could not chain from the result: ${error.message || error}`);
+        return;
+      }
+    }
+    if (!fileId) {
+      setStatus("Open a workbook first — an empty sheet has nothing to edit.");
       return;
     }
-  }
-  if (!fileId) {
-    setStatus("Open a workbook first — an empty sheet has nothing to edit.");
-    return;
-  }
-  await submitRun("", {
-    edits: [...pending.values()].map((edit, index) => ({
-      address: [...pending.keys()][index],
+    const edits = [...pending.entries()].map(([address, edit]) => ({
+      address,
       ...(edit.formula ? { formula: edit.formula } : { value: edit.value })
-    })),
-    sheet: sheetName,
-    initFile: fileId,
-    mode: "action"
-  });
+    }));
+    const run = await submitRun("", {
+      edits,
+      sheet: sheetName,
+      initFile: fileId,
+      mode: "action"
+    });
+    // On failure: stop the chain and keep this sheet's edits staged.
+    if (!run || run.status !== "completed") return;
+    // Success: submitRun reloaded the result into state.workbook; drop this
+    // sheet's staged edits and let the next iteration chain from the new run.
+    delete state.pending[sheetName];
+    updatePendingBar();
+  }
 }
 
 // ---- Credit billing (Stripe Checkout) -------------------------------------
@@ -822,6 +844,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("runsLink").addEventListener("click", loadRuns);
   $("applyEdits").addEventListener("click", applyEdits);
   $("discardEdits").addEventListener("click", discardEdits);
+  $("refreshGrid").addEventListener("click", async () => {
+    const wb = state.workbook;
+    if (!wb) return;
+    if (wb.runId) await loadWorkbookFromRun(wb.runId);
+    else if (wb.fileId) await loadWorkbookFromFileId(wb.fileId, wb.fileName);
+    else setStatus("Nothing to refresh yet.");
+  });
   $("formulaBar").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
