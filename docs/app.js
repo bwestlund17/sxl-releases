@@ -388,11 +388,15 @@ function renderGrid() {
       td.dataset.addr = address;
       const pendingEdit = pending && pending.get(address);
       const cell = pendingEdit
-        ? (pendingEdit.formula ? { f: pendingEdit.formula } : { v: pendingEdit.value })
+        ? (pendingEdit.formula
+            ? { f: pendingEdit.formula, ...(pendingEdit.format ? { nf: pendingEdit.format } : {}) }
+            : { v: pendingEdit.value, ...(pendingEdit.format ? { nf: pendingEdit.format } : {}) })
         : sheet.cells[address];
       if (cell) {
         if (cell.v !== undefined && cell.v !== null) {
-          td.textContent = String(cell.v);
+          td.textContent = typeof cell.nf === "string" && typeof cell.v === "number"
+            ? renderExcelNumber(cell.nf, cell.v)
+            : String(cell.v);
           if (typeof cell.v === "number") td.classList.add("num");
         } else if (cell.f) {
           // Formula preview: compute typical formulas client-side; unsupported
@@ -404,6 +408,9 @@ function renderGrid() {
           } else if (isFormulaError(computed)) {
             td.textContent = computed.__err;
             td.classList.add("fonly");
+          } else if (typeof computed === "number" && typeof cell.nf === "string") {
+            td.textContent = renderExcelNumber(cell.nf, computed);
+            td.classList.add("num");
           } else {
             td.textContent = formulaDisplay(computed);
             if (typeof computed === "number") td.classList.add("num");
@@ -1408,4 +1415,31 @@ function formulaDisplay(value) {
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
   if (value === null || value === undefined) return "";
   return String(value);
+}
+
+// ---- Number rendering for Excel format codes -------------------------------
+// Renders the subset of Excel number formats the grid supports: percent
+// (x100 + %), thousands grouping, fixed decimals, a leading $ currency
+// symbol. Anything else (dates, bracketed conditions, text sections) falls
+// back to the raw value — real Excel stays the source of truth.
+function renderExcelNumber(format, value) {
+  const num = typeof value === "number" ? value : Number(value);
+  if (typeof value === "boolean" || value === null || value === undefined || !Number.isFinite(num)) {
+    return String(value);
+  }
+  const section = String(format || "General").split(";")[0];
+  if (section === "General" || !/^[^"\[\]yYdDhHsS]*$/.test(section)) return String(value);
+  const isPercent = section.includes("%");
+  const hasCurrency = section.startsWith("$");
+  const thousands = section.includes(",");
+  const decMatch = section.match(/\.(0+)/);
+  const decimals = decMatch ? decMatch[1].length : 0;
+  const scaled = num * (isPercent ? 100 : 1);
+  let text = Math.abs(scaled).toFixed(decimals);
+  if (thousands) {
+    const [intPart, decPart] = text.split(".");
+    text = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (decPart ? "." + decPart : "");
+  }
+  if (scaled < 0) text = "-" + text;
+  return (hasCurrency ? "$" : "") + text + (isPercent ? "%" : "");
 }
