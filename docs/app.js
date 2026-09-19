@@ -849,7 +849,11 @@ async function applyEdits() {
     }
     const edits = [...pending.entries()].map(([address, edit]) => ({
       address,
-      ...(edit.formula ? { formula: edit.formula } : { value: edit.value })
+      ...(edit.formula ? { formula: edit.formula } : { value: edit.value }),
+      ...(edit.format ? { format: edit.format } : {}),
+      ...(edit.bold !== undefined ? { bold: edit.bold } : {}),
+      ...(edit.fillColor ? { fillColor: edit.fillColor } : {}),
+      ...(edit.fontColor ? { fontColor: edit.fontColor } : {})
     }));
     const run = await submitRun("", {
       edits,
@@ -994,6 +998,36 @@ window.addEventListener("DOMContentLoaded", async () => {
       const staged = current.f ? { formula: current.f, format: button.dataset.format } : { value: String(current.v), format: button.dataset.format };
       stageEdit(address, staged);
       setStatus(`Staged ${button.dataset.format} on ${address} — Apply runs it through the audited ledger.`);
+    });
+  }
+  // Character/cell style presets (bold, fill, font) — same staged-edit flow.
+  const stageStyle = (patch) => {
+    const wb = state.workbook;
+    if (!wb) return;
+    const sheet = wb.sheets[wb.active];
+    const address = state.selected;
+    const current = effectiveCell(sheet, address);
+    if (!current || (current.v === undefined && !current.f)) {
+      setStatus("Select a cell with a value first.");
+      return;
+    }
+    const base = current.f ? { formula: current.f } : { value: String(current.v) };
+    stageEdit(address, { ...base, ...patch });
+    setStatus(`Staged style on ${address} — Apply runs it through the audited ledger.`);
+  };
+  for (const button of document.querySelectorAll("#styleButtons .style-btn")) {
+    button.addEventListener("click", () => {
+      if (button.dataset.bold) {
+        // Toggle against the currently staged bold state.
+        const sheet = state.workbook.sheets[state.workbook.active];
+        const current = effectiveCell(sheet, state.selected);
+        const nowBold = Boolean(current && current.bold);
+        stageStyle({ bold: !nowBold });
+      } else if (button.dataset.fill) {
+        stageStyle({ fillColor: button.dataset.fill });
+      } else if (button.dataset.font) {
+        stageStyle({ fontColor: button.dataset.font });
+      }
     });
   }
   $("formulaBar").addEventListener("keydown", (event) => {
