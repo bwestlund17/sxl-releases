@@ -55,6 +55,13 @@
     <span id="nameBox">A1</span>
     <span class="fx">fx</span>
     <input id="formulaBar" placeholder="Type a value or =FORMULA, then Enter" title="Edit the selected cell; Enter stages the edit, Esc cancels">
+    <span id="formatButtons" title="Stage a number format on the selected cell">
+      <button class="fmt-btn" data-format="0.00%" title="Percent — 0.00%">%</button>
+      <button class="fmt-btn" data-format="#,##0" title="Thousands — #,##0">,</button>
+      <button class="fmt-btn" data-format="#,##0.00" title="Thousands with decimals — #,##0.00">,.00</button>
+      <button class="fmt-btn" data-format="$#,##0.00" title="Currency — $#,##0.00">$</button>
+      <button class="fmt-btn" data-format="0.000" title="Three decimals — 0.000">.000</button>
+    </span>
   </div>
 
   <main id="workspace">

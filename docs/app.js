@@ -979,6 +979,23 @@ window.addEventListener("DOMContentLoaded", async () => {
     else setStatus("Nothing to refresh yet.");
   });
   $("gridScroll").addEventListener("keydown", onGridKey);
+  // Number-format presets: stage {value|formula, format} on the selected cell.
+  for (const button of document.querySelectorAll(".fmt-btn")) {
+    button.addEventListener("click", () => {
+      const wb = state.workbook;
+      if (!wb) return;
+      const sheet = wb.sheets[wb.active];
+      const address = state.selected;
+      const current = effectiveCell(sheet, address);
+      if (!current || (current.v === undefined && !current.f)) {
+        setStatus("Select a cell with a value first.");
+        return;
+      }
+      const staged = current.f ? { formula: current.f, format: button.dataset.format } : { value: String(current.v), format: button.dataset.format };
+      stageEdit(address, staged);
+      setStatus(`Staged ${button.dataset.format} on ${address} — Apply runs it through the audited ledger.`);
+    });
+  }
   $("formulaBar").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
