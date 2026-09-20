@@ -802,6 +802,14 @@ async function submitRun(promptText, overrides = {}) {
       addDownloadButtons(statusMessage, run);
       const loaded = await loadWorkbookFromRun(run.runId);
       if (loaded) addMessage("sys", "Result workbook loaded into the grid.");
+      // Apply runs are audited ledger sessions — offer their audited inverse.
+      const undoBtn = document.createElement("button");
+      undoBtn.className = "mini-btn";
+      undoBtn.textContent = "↩ Undo this run";
+      undoBtn.title = "Replay the audited inverse (sxl revert) of this run";
+      undoBtn.addEventListener("click", () => revertRun(run.runId, undoBtn));
+      statusMessage.appendChild(document.createElement("br"));
+      statusMessage.appendChild(undoBtn);
     } else {
       statusMessage.className = "msg err";
       statusMessage.textContent = `Run ${run.status}: ${run.error || "no details"}`;
@@ -874,6 +882,42 @@ async function applyEdits() {
     // sheet's staged edits and let the next iteration chain from the new run.
     delete state.pending[sheetName];
     updatePendingBar();
+  }
+}
+
+// Undo (E184): replay the audited inverse of a completed run. Both local and
+// hosted revert routes run `sxl revert` on the worker/server ledger — the
+// refusal reasons from the ledger guards surface verbatim.
+async function revertRun(runId, button) {
+  if (button) button.disabled = true;
+  const note = addMessage("sys", "Reverting…");
+  try {
+    await ensureToken();
+    const response = await authFetch(`/api/spreadsheets/${runId}/revert`, { method: "POST" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    if (body.reverted) {
+      note.className = "msg done";
+      note.textContent = "Reverted — pre-run values restored through the audited ledger.";
+      await loadWorkbookFromRun(runId);
+    } else if (body.runId) {
+      // Hosted: revert executed as its own queued job on the standing worker.
+      note.textContent = "Revert job queued…";
+      const job = await pollRun(body.runId, (m) => { note.textContent = m; });
+      if (!job) return;
+      if (job.status === "completed") {
+        note.className = "msg done";
+        note.textContent = "Reverted through the audited ledger.";
+        await loadWorkbookFromRun(body.runId);
+      } else {
+        note.className = "msg err";
+        note.textContent = `Revert failed: ${job.error || job.status}`;
+      }
+    }
+    loadRuns();
+  } catch (error) {
+    note.className = "msg err";
+    note.textContent = `Revert failed: ${error.message || error}`;
   }
 }
 
