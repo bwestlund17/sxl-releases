@@ -809,11 +809,18 @@ async function loadRuns() {
       const link = document.createElement("a");
       link.textContent = `${run.runId.slice(0, 8)} · ${run.status} · ${String(run.prompt || "").slice(0, 40)}`;
       link.addEventListener("click", async () => {
-        const statusResponse = await authFetch(`/api/spreadsheets/${run.runId}`);
-        if (statusResponse.ok) {
-          const run = await statusResponse.json();
-          addMessage("sys", `Loaded run ${run.runId.slice(0, 8)} (${run.status}).`);
-          if (run.status === "completed") await loadWorkbookFromRun(run.runId);
+        const card = addMessage("sys", `Loading run ${run.runId.slice(0, 8)}…`);
+        try {
+          const statusResponse = await authFetch(`/api/spreadsheets/${run.runId}`);
+          const body = await statusResponse.json().catch(() => ({}));
+          if (!statusResponse.ok) throw new Error(body.error || `HTTP ${statusResponse.status}`);
+          const result = ["completed", "failed", "cancelled"].includes(body.status)
+            ? body : await pollRun(body.runId, (message) => { card.textContent = message; });
+          if (result) await renderRunResult(result, card);
+          loadRuns();
+        } catch (error) {
+          card.className = "msg err";
+          card.textContent = `Could not load run: ${error.message || error}`;
         }
       });
       item.appendChild(link);
@@ -826,6 +833,33 @@ async function loadRuns() {
     }
   } catch (error) {
     setStatus(`Could not load runs: ${error.message || error}`);
+  }
+}
+
+async function renderRunResult(run, target) {
+  if (run.status === "completed") {
+    target.className = "msg done";
+    target.textContent = run.summary ? String(run.summary).slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
+    addDownloadButtons(target, run);
+    if (run.downloadUrl || (run.artifacts || []).some((name) => /\.xlsx?$/i.test(name))) {
+      const loaded = await loadWorkbookFromRun(run.runId);
+      if (loaded) addMessage("sys", "Result workbook loaded into the grid.");
+    }
+    if ((run.mutationSetIds || []).length > 0 && !run.revertedAt) {
+      const undoBtn = document.createElement("button");
+      undoBtn.className = "mini-btn";
+      undoBtn.textContent = "↩ Undo this run";
+      undoBtn.title = "Replay the audited inverse (sxl revert) of this run";
+      undoBtn.addEventListener("click", () => revertRun(run.runId, undoBtn));
+      target.appendChild(document.createElement("br"));
+      target.appendChild(undoBtn);
+    }
+  } else if (run.status === "cancelled") {
+    target.className = "msg err";
+    target.textContent = "Run cancelled.";
+  } else {
+    target.className = "msg err";
+    target.textContent = `Run ${run.status}: ${run.error || "no details"}`;
   }
 }
 
@@ -891,27 +925,7 @@ async function submitRun(promptText, overrides = {}) {
     state.runId = submitted.runId;
     const run = await pollRun(submitted.runId, (m) => { statusMessage.textContent = m; });
     if (!run) return null;
-    if (run.status === "completed") {
-      statusMessage.className = "msg done";
-      statusMessage.textContent = run.summary ? String(run.summary).slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
-      addDownloadButtons(statusMessage, run);
-      const loaded = await loadWorkbookFromRun(run.runId);
-      if (loaded) addMessage("sys", "Result workbook loaded into the grid.");
-      // Apply runs are audited ledger sessions — offer their audited inverse.
-      const undoBtn = document.createElement("button");
-      undoBtn.className = "mini-btn";
-      undoBtn.textContent = "↩ Undo this run";
-      undoBtn.title = "Replay the audited inverse (sxl revert) of this run";
-      undoBtn.addEventListener("click", () => revertRun(run.runId, undoBtn));
-      statusMessage.appendChild(document.createElement("br"));
-      statusMessage.appendChild(undoBtn);
-    } else if (run.status === "cancelled") {
-      statusMessage.className = "msg err";
-      statusMessage.textContent = "Run cancelled.";
-    } else {
-      statusMessage.className = "msg err";
-      statusMessage.textContent = `Run ${run.status}: ${run.error || "no details"}`;
-    }
+    await renderRunResult(run, statusMessage);
     loadCredits();
     loadRuns();
     return run;
