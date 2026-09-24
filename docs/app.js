@@ -502,7 +502,7 @@ function renderGrid() {
   }
   const shown = Object.keys(sheet.cells || {}).length;
   $("gridStatus").textContent = `${sheet.name}: ${shown} cell${shown === 1 ? "" : "s"} loaded`
-    + (shown >= 20000 ? " (preview capped)" : "");
+    + (wb.truncated ? " (preview limited; some cells or sheets are hidden)" : "");
   selectCell(state.selected, effectiveCell(sheet, state.selected));
 }
 
@@ -658,8 +658,8 @@ async function openWorkbookFile(file) {
     setStatus("Uploading file...");
     const uploaded = await uploadFile(file);
     state.pendingFileId = uploaded.fileId;
-    await loadWorkbookFromFileId(uploaded.fileId, uploaded.filename || file.name);
-    setStatus(`Loaded ${file.name}.`);
+    const previewLoaded = await loadWorkbookFromFileId(uploaded.fileId, uploaded.filename || file.name);
+    if (previewLoaded) setStatus(`Loaded ${file.name}${state.workbook?.truncated ? " with a limited grid preview" : ""}.`);
   } catch (error) {
     setStatus(`ERROR: ${error.message || error}`);
   }
@@ -671,7 +671,7 @@ async function loadWorkbookFromFileId(fileId, filename) {
   if (!response.ok) {
     setStatus(body.error || `no grid preview for ${filename} (HTTP ${response.status})`);
     if (!state.workbook) setWorkbook(emptyWorkbook(filename));
-    return;
+    return false;
   }
   setWorkbook({
     fileName: filename || body.filename || "workbook.xlsx",
@@ -681,6 +681,7 @@ async function loadWorkbookFromFileId(fileId, filename) {
     active: 0,
     truncated: body.truncated
   });
+  return true;
 }
 
 async function loadWorkbookFromRun(runId, artifact) {
