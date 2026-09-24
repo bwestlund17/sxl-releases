@@ -94,6 +94,10 @@
         <span id="gridStatus"></span>
         <span id="pendingWrap" hidden>
           <span id="pendingCount"></span>
+          <select id="editEngine" title="Choose how staged grid edits run">
+            <option value="live_excel">Live Excel</option>
+            <option value="headless_value">Office-free values (.xlsx only)</option>
+          </select>
           <button id="applyEdits" class="mini-btn primary" title="Run the audited --set edits on this sheet">Apply</button>
           <button id="discardEdits" class="mini-btn" title="Discard staged edits on this sheet">Discard</button>
         </span>

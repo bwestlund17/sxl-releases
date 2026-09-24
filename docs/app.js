@@ -997,7 +997,7 @@ async function submitRun(promptText, overrides = {}) {
     await ensureToken();
     let initFile = overrides.initFile || null;
     const file = $("file").files && $("file").files[0];
-    if (file) {
+    if (file && !overrides.initFile) {
       if (!state.pendingUpload || state.pendingUpload.file !== file) {
         statusMessage.textContent = "Uploading attachment…";
         const uploaded = await uploadFile(file);
@@ -1021,6 +1021,7 @@ async function submitRun(promptText, overrides = {}) {
     if (overrides.edits) {
       body.edits = overrides.edits;
       if (overrides.sheet) body.sheet = overrides.sheet;
+      if (overrides.executionLane) body.executionLane = overrides.executionLane;
     }
     if (!overrides.edits && $("model").value) body.model = $("model").value;
     const bodyJson = JSON.stringify(body);
@@ -1041,7 +1042,7 @@ async function submitRun(promptText, overrides = {}) {
     try { sessionStorage.removeItem(PENDING_SUBMISSION_KEY); } catch { /* private browsing */ }
     state.pendingUpload = null;
     try { sessionStorage.removeItem(PENDING_UPLOAD_KEY); } catch { /* private browsing */ }
-    if (file) $("file").value = "";
+    if (file && !overrides.initFile) $("file").value = "";
     if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
     state.runId = submitted.runId;
     const run = await pollRun(submitted.runId, (m) => { statusMessage.textContent = m; });
@@ -1066,13 +1067,32 @@ async function submitRun(promptText, overrides = {}) {
 async function applyEdits() {
   const wb = state.workbook;
   if (!wb) return;
+  // Loading each result replaces the workbook and normally clears staged
+  // edits. Keep the other sheets' maps until their own runs have committed.
+  const stagedBySheet = state.pending;
   const activeName = wb.sheets[wb.active].name;
   const sheetNames = Object.keys(state.pending)
     .filter((name) => state.pending[name] && state.pending[name].size > 0)
     .sort((a, b) => (a === activeName ? -1 : b === activeName ? 1 : 0));
   if (!sheetNames.length) return;
+  const executionLane = $("editEngine").value;
+  if (executionLane === "headless_value") {
+    if (!/\.xlsx$/i.test(wb.fileName || "")) {
+      setStatus("Office-free edits require a backing .xlsx workbook.");
+      return;
+    }
+    for (const sheetName of sheetNames) {
+      for (const edit of state.pending[sheetName].values()) {
+        if (typeof edit.value !== "string" || edit.value.startsWith("=") ||
+            Object.keys(edit).some((key) => key !== "value")) {
+          setStatus("Office-free edits support plain values only. Choose Live Excel for formulas or formatting.");
+          return;
+        }
+      }
+    }
+  }
   for (const sheetName of sheetNames) {
-    const pending = state.pending[sheetName];
+    const pending = stagedBySheet[sheetName];
     if (!pending || pending.size === 0) continue;
     let fileId = state.workbook && state.workbook.fileId;
     if (!fileId && state.workbook && state.workbook.runId) {
@@ -1111,14 +1131,23 @@ async function applyEdits() {
       edits,
       sheet: sheetName,
       initFile: fileId,
-      mode: "action"
+      mode: "action",
+      executionLane
     });
     // On failure: stop the chain and keep this sheet's edits staged.
     if (!run || run.status !== "completed") return;
+    if (state.workbook?.runId !== run.runId) {
+      state.pending = stagedBySheet;
+      updatePendingBar();
+      setStatus("The run completed, but its workbook could not be loaded. Open it from runs before applying the remaining edits.");
+      return;
+    }
     // Success: submitRun reloaded the result into state.workbook; drop this
     // sheet's staged edits and let the next iteration chain from the new run.
-    delete state.pending[sheetName];
+    delete stagedBySheet[sheetName];
+    state.pending = stagedBySheet;
     updatePendingBar();
+    renderGrid();
   }
 }
 
