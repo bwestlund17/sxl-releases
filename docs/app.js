@@ -750,9 +750,80 @@ function addDownloadButtons(target, run) {
   };
   if (run.downloadUrl) add("Download workbook", api(run.downloadUrl));
   for (const artifact of run.artifacts || []) {
-    add(`Download ${artifact}`, api(`/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`));
+    add(artifact === "sxl-audit-receipt.json" ? "Download audit receipt" : `Download ${artifact}`,
+      api(`/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`));
   }
   if (wrap.children.length) target.appendChild(wrap);
+}
+
+function snapshotLabel(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return "(empty)";
+  if (snapshot.formula != null) return String(snapshot.formula);
+  if (snapshot.value != null && snapshot.value !== "") return String(snapshot.value);
+  return "(empty)";
+}
+
+function addAuditReview(target, run) {
+  if (!(run.artifacts || []).includes("sxl-audit-receipt.json")) return;
+  const button = document.createElement("button");
+  button.className = "mini-btn";
+  button.textContent = "Review changed cells";
+  const panel = document.createElement("div");
+  panel.className = "audit-review";
+  let loaded = false;
+  button.addEventListener("click", async () => {
+    if (loaded) {
+      panel.hidden = !panel.hidden;
+      button.textContent = panel.hidden ? "Review changed cells" : "Hide changed cells";
+      return;
+    }
+    button.disabled = true;
+    panel.hidden = false;
+    panel.textContent = "Loading audit receipt…";
+    try {
+      const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(run.runId)}/artifacts/sxl-audit-receipt.json`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const receipt = await response.json();
+      if (receipt.schema !== "sxl.web-audit.v1" || receipt.runId !== run.runId || !Array.isArray(receipt.sessions)) {
+        throw new Error("receipt does not match this run");
+      }
+      panel.textContent = "";
+      const heading = document.createElement("strong");
+      heading.textContent = `${receipt.changeCount} recorded change${receipt.changeCount === 1 ? "" : "s"}${run.revertedAt ? " · reverted" : ""}`;
+      panel.appendChild(heading);
+      const list = document.createElement("ol");
+      let shown = 0;
+      for (const session of receipt.sessions) {
+        for (const change of session.changes || []) {
+          if (shown >= 100) break;
+          const item = document.createElement("li");
+          const before = snapshotLabel(change.before);
+          const after = snapshotLabel(change.after);
+          item.textContent = `${change.sheetName}!${change.address}: ${before} → ${after}`;
+          if (change.sourceLabel) item.textContent += ` · Source label: ${change.sourceLabel}`;
+          if (change.explanation) item.textContent += ` · ${change.explanation}`;
+          list.appendChild(item);
+          shown++;
+        }
+        if (shown >= 100) break;
+      }
+      panel.appendChild(list);
+      if (receipt.changeCount > shown) {
+        const note = document.createElement("p");
+        note.textContent = `Showing ${shown} of ${receipt.changeCount}; download the receipt for the full record.`;
+        panel.appendChild(note);
+      }
+      loaded = true;
+      button.textContent = "Hide changed cells";
+      button.disabled = false;
+    } catch (error) {
+      panel.textContent = `Audit receipt unavailable: ${error.message || error}`;
+      button.disabled = false;
+    }
+  });
+  target.appendChild(button);
+  target.appendChild(panel);
+  panel.hidden = true;
 }
 
 async function downloadUrl(url) {
@@ -867,18 +938,26 @@ async function renderRunResult(run, target) {
     target.className = "msg done";
     target.textContent = run.summary ? String(run.summary).slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
     addDownloadButtons(target, run);
+    addAuditReview(target, run);
     if (run.downloadUrl || (run.artifacts || []).some((name) => /\.xlsx?$/i.test(name))) {
       const loaded = await loadWorkbookFromRun(run.runId);
       if (loaded) addMessage("sys", "Result workbook loaded into the grid.");
     }
-    if ((run.mutationSetIds || []).length > 0 && !run.revertedAt) {
-      const undoBtn = document.createElement("button");
-      undoBtn.className = "mini-btn";
-      undoBtn.textContent = "↩ Undo this run";
-      undoBtn.title = "Replay the audited inverse (sxl revert) of this run";
-      undoBtn.addEventListener("click", () => revertRun(run.runId, undoBtn));
+    if ((run.mutationSetIds || []).length > 0) {
       target.appendChild(document.createElement("br"));
-      target.appendChild(undoBtn);
+      if (run.revertedAt || run.revertJob) {
+        const undoState = document.createElement("span");
+        undoState.textContent = run.revertedAt ? "Reverted through the audited ledger."
+          : `Undo ${run.revertJob.status}; open its run in History for details.`;
+        target.appendChild(undoState);
+      } else {
+        const undoBtn = document.createElement("button");
+        undoBtn.className = "mini-btn";
+        undoBtn.textContent = "↩ Undo this run";
+        undoBtn.title = "Replay the audited inverse (sxl revert) of this run";
+        undoBtn.addEventListener("click", () => revertRun(run.runId, undoBtn));
+        target.appendChild(undoBtn);
+      }
     }
   } else if (run.status === "cancelled") {
     target.className = "msg err";
