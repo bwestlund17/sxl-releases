@@ -31,15 +31,6 @@ const API_BASE = (() => {
 const api = (path) => `${API_BASE}${String(path).startsWith("/") ? path : `/${path}`}`;
 const PENDING_SUBMISSION_KEY = `sxl-pending-submission:${API_BASE}`;
 const PENDING_UPLOAD_KEY = `sxl-pending-upload:${API_BASE}`;
-try {
-  const saved = JSON.parse(sessionStorage.getItem(PENDING_SUBMISSION_KEY) || "null");
-  if (saved && typeof saved.key === "string" && typeof saved.bodyJson === "string") {
-    state.pendingSubmission = saved;
-    const prior = JSON.parse(saved.bodyJson);
-    if (typeof prior.prompt === "string" && prior.prompt) $("prompt").value = prior.prompt;
-    if (prior.mode === "ask" || prior.mode === "action") $("mode").value = prior.mode;
-  }
-} catch { /* private browsing may deny storage */ }
 
 // Supabase Auth config (injected as meta tags on the hosted page). Absent in
 // local mode, where the app keeps using the anonymous local token.
@@ -48,6 +39,34 @@ const AUTH_ANON = (document.querySelector('meta[name="sxl-auth-anon-key"]') || {
 const AUTH_ENABLED = Boolean(AUTH_URL && AUTH_ANON);
 const OAUTH_PROVIDERS = ["google", "github", "azure", "apple", "gitlab", "bitbucket", "discord", "linkedin_oidc"];
 const PROVIDER_LABELS = { azure: "Microsoft", linkedin_oidc: "LinkedIn" };
+
+function clearAccountDrafts() {
+  state.pendingSubmission = null;
+  state.pendingUpload = null;
+  state.pendingFileId = null;
+  state.workbook = null;
+  state.pending = {};
+  try {
+    sessionStorage.removeItem(PENDING_SUBMISSION_KEY);
+    sessionStorage.removeItem(PENDING_UPLOAD_KEY);
+  } catch { /* private browsing may deny storage */ }
+  $("prompt").value = "";
+  $("file").value = "";
+}
+
+try {
+  // Hosted retry state belongs to the signed-in account. An unsigned tab must
+  // not revive a prior account's prompt before authentication finishes.
+  if (!AUTH_ENABLED || localStorage.getItem("sxl.platform.token")) {
+    const saved = JSON.parse(sessionStorage.getItem(PENDING_SUBMISSION_KEY) || "null");
+    if (saved && typeof saved.key === "string" && typeof saved.bodyJson === "string") {
+      state.pendingSubmission = saved;
+      const prior = JSON.parse(saved.bodyJson);
+      if (typeof prior.prompt === "string" && prior.prompt) $("prompt").value = prior.prompt;
+      if (prior.mode === "ask" || prior.mode === "action") $("mode").value = prior.mode;
+    }
+  }
+} catch { /* private browsing may deny storage */ }
 
 function setStatus(message) {
   $("status").textContent = message;
@@ -80,9 +99,12 @@ async function exchangeSession(accessToken) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  const priorToken = localStorage.getItem("sxl.platform.token");
+  if (AUTH_ENABLED && priorToken !== body.token) clearAccountDrafts();
   state.token = body.token;
   localStorage.setItem("sxl.platform.token", body.token);
   if (body.username) localStorage.setItem("sxl.platform.username", body.username);
+  if (AUTH_ENABLED && priorToken && priorToken !== body.token) location.reload();
   return body;
 }
 
@@ -195,6 +217,7 @@ async function setupAuth() {
     }
   });
   $("authSignOut").addEventListener("click", () => {
+    clearAccountDrafts();
     state.token = null;
     localStorage.removeItem("sxl.platform.token");
     localStorage.removeItem("sxl.platform.username");
@@ -236,10 +259,13 @@ async function authFetch(path, options = {}) {
   let response = await fetch(api(path), Object.assign({}, options, { headers }));
   if (response.status === 401) {
     if (AUTH_ENABLED) {
+      clearAccountDrafts();
       state.token = null;
       localStorage.removeItem("sxl.platform.token");
+      localStorage.removeItem("sxl.platform.username");
       $("accountPanel").hidden = false;
       setAuthStatus("Your session expired. Sign in again to continue.");
+      location.reload();
       throw new Error("Your session expired. Sign in again to continue.");
     }
     await login();
