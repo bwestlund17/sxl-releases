@@ -9,6 +9,8 @@ const state = {
   workbook: null,
   selected: "A1",
   pendingFileId: null,
+  pendingUpload: null,
+  pendingSubmission: null,
   // staged web-grid edits, keyed by sheet name: Map<address, {value?|formula?}>
   pending: {}
 };
@@ -784,10 +786,12 @@ async function submitRun(promptText, overrides = {}) {
     let initFile = overrides.initFile || null;
     const file = $("file").files && $("file").files[0];
     if (file) {
-      statusMessage.textContent = "Uploading attachment…";
-      const uploaded = await uploadFile(file);
-      initFile = uploaded.fileId;
-      $("file").value = "";
+      if (!state.pendingUpload || state.pendingUpload.file !== file) {
+        statusMessage.textContent = "Uploading attachment…";
+        const uploaded = await uploadFile(file);
+        state.pendingUpload = { file, fileId: uploaded.fileId };
+      }
+      initFile = state.pendingUpload.fileId;
     } else if (!initFile && state.pendingFileId) {
       initFile = state.pendingFileId;
     }
@@ -801,14 +805,21 @@ async function submitRun(promptText, overrides = {}) {
       if (overrides.sheet) body.sheet = overrides.sheet;
     }
     if (!overrides.edits && $("model").value) body.model = $("model").value;
+    const bodyJson = JSON.stringify(body);
+    if (!state.pendingSubmission || state.pendingSubmission.bodyJson !== bodyJson) {
+      state.pendingSubmission = { bodyJson, key: crypto.randomUUID() };
+    }
     statusMessage.textContent = "Queued…";
     const response = await authFetch("/api/spreadsheets", {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body)
+      headers: { "content-type": "application/json", "idempotency-key": state.pendingSubmission.key },
+      body: bodyJson
     });
     const submitted = await response.json();
     if (!response.ok) throw new Error(submitted.error || `HTTP ${response.status}`);
+    state.pendingSubmission = null;
+    state.pendingUpload = null;
+    if (file) $("file").value = "";
     state.runId = submitted.runId;
     const run = await pollRun(submitted.runId, (m) => { statusMessage.textContent = m; });
     if (!run) return null;
