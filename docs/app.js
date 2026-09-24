@@ -36,6 +36,7 @@ try {
     state.pendingSubmission = saved;
     const prior = JSON.parse(saved.bodyJson);
     if (typeof prior.prompt === "string" && prior.prompt) $("prompt").value = prior.prompt;
+    if (prior.mode === "ask" || prior.mode === "action") $("mode").value = prior.mode;
   }
 } catch { /* private browsing may deny storage */ }
 
@@ -1042,6 +1043,12 @@ async function loadModels() {
       option.value = model.id;
       option.textContent = model.id;
       select.appendChild(option);
+    }
+    if (state.pendingSubmission) {
+      const prior = JSON.parse(state.pendingSubmission.bodyJson);
+      if (prior.model && Array.from(select.options).some((option) => option.value === prior.model)) {
+        select.value = prior.model;
+      }
     }
   } catch {
     // run submits without a model field when empty
