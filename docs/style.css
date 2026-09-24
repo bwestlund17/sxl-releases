@@ -124,6 +124,7 @@ a { color: #0d6b3f; }
   padding: 1px 8px; font-size: 12px;
 }
 .mini-btn.primary { background: #0d6b3f; border-color: #0d6b3f; color: #ffffff; }
+#cancelRun[hidden] { display: none; }
 #pendingWrap { display: inline-flex; align-items: center; gap: 6px; color: #b7791f; font-weight: 600; }
 #pendingWrap[hidden] { display: none; }
 #statusbar {

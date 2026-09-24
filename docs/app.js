@@ -745,27 +745,55 @@ async function downloadUrl(url) {
 
 async function pollRun(runId, statusMessage) {
   state.polling = true;
+  state.runId = runId;
+  const cancelButton = $("cancelRun");
+  cancelButton.hidden = false;
+  cancelButton.disabled = false;
+  cancelButton.textContent = "Cancel run";
   let last = null;
-  while (state.polling && state.runId === runId) {
-    const response = await authFetch(`/api/spreadsheets/${runId}`);
-    if (!response.ok) {
-      statusMessage(`status failed: HTTP ${response.status}`);
+  try {
+    while (state.polling && state.runId === runId) {
+      const response = await authFetch(`/api/spreadsheets/${runId}`);
+      if (!response.ok) {
+        statusMessage(`status failed: HTTP ${response.status}`);
+        return null;
+      }
+      const run = await response.json();
+      if (run.status !== last) {
+        last = run.status;
+        statusMessage(`Run ${runId.slice(0, 8)}: ${run.status}…`);
+      }
+      if (["completed", "failed", "cancelled"].includes(run.status)) return run;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return null;
+  } finally {
+    if (state.runId === runId) {
       state.polling = false;
-      return null;
+      cancelButton.hidden = true;
+      cancelButton.disabled = false;
     }
-    const run = await response.json();
-    if (run.status !== last) {
-      last = run.status;
-      statusMessage(`Run ${runId.slice(0, 8)}: ${run.status}…`);
-    }
-    if (["completed", "failed", "cancelled"].includes(run.status)) {
-      state.polling = false;
-      return run;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  state.polling = false;
-  return null;
+}
+
+async function cancelActiveRun() {
+  if (!state.polling || !state.runId) return;
+  const runId = state.runId;
+  const button = $("cancelRun");
+  button.disabled = true;
+  button.textContent = "Cancelling…";
+  try {
+    const response = await authFetch(`/api/spreadsheets/${runId}/cancel`, { method: "POST" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    setStatus(`Run ${runId.slice(0, 8)} cancelled.`);
+  } catch (error) {
+    setStatus(`Cancel failed: ${error.message || error}`);
+    if (state.runId === runId) {
+      button.disabled = false;
+      button.textContent = "Cancel run";
+    }
+  }
 }
 
 async function loadRuns() {
@@ -877,6 +905,9 @@ async function submitRun(promptText, overrides = {}) {
       undoBtn.addEventListener("click", () => revertRun(run.runId, undoBtn));
       statusMessage.appendChild(document.createElement("br"));
       statusMessage.appendChild(undoBtn);
+    } else if (run.status === "cancelled") {
+      statusMessage.className = "msg err";
+      statusMessage.textContent = "Run cancelled.";
     } else {
       statusMessage.className = "msg err";
       statusMessage.textContent = `Run ${run.status}: ${run.error || "no details"}`;
@@ -1092,6 +1123,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("exportFile").addEventListener("click", exportWorkbook);
   $("send").addEventListener("click", () => submitRun());
+  $("cancelRun").addEventListener("click", cancelActiveRun);
   $("prompt").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
