@@ -29,6 +29,15 @@ const API_BASE = (() => {
   return location.pathname.replace(/\/[^/]*$/, "");
 })();
 const api = (path) => `${API_BASE}${String(path).startsWith("/") ? path : `/${path}`}`;
+const PENDING_SUBMISSION_KEY = `sxl-pending-submission:${API_BASE}`;
+try {
+  const saved = JSON.parse(sessionStorage.getItem(PENDING_SUBMISSION_KEY) || "null");
+  if (saved && typeof saved.key === "string" && typeof saved.bodyJson === "string") {
+    state.pendingSubmission = saved;
+    const prior = JSON.parse(saved.bodyJson);
+    if (typeof prior.prompt === "string" && prior.prompt) $("prompt").value = prior.prompt;
+  }
+} catch { /* private browsing may deny storage */ }
 
 // Supabase Auth config (injected as meta tags on the hosted page). Absent in
 // local mode, where the app keeps using the anonymous local token.
@@ -779,7 +788,6 @@ async function submitRun(promptText, overrides = {}) {
   }
   $("send").disabled = true;
   if (prompt) addMessage("user", prompt);
-  if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
   const statusMessage = addMessage("sys", "Submitting…");
   try {
     await ensureToken();
@@ -800,6 +808,12 @@ async function submitRun(promptText, overrides = {}) {
       mode: overrides.mode || ($("mode").value === "ask" ? "ask" : "action")
     };
     if (initFile) body.initFile = initFile;
+    if (!initFile && state.pendingSubmission && !overrides.edits) {
+      try {
+        const prior = JSON.parse(state.pendingSubmission.bodyJson);
+        if (prior.prompt === body.prompt && prior.mode === body.mode && prior.initFile) body.initFile = prior.initFile;
+      } catch { /* a malformed saved request is replaced below */ }
+    }
     if (overrides.edits) {
       body.edits = overrides.edits;
       if (overrides.sheet) body.sheet = overrides.sheet;
@@ -809,6 +823,8 @@ async function submitRun(promptText, overrides = {}) {
     if (!state.pendingSubmission || state.pendingSubmission.bodyJson !== bodyJson) {
       state.pendingSubmission = { bodyJson, key: crypto.randomUUID() };
     }
+    try { sessionStorage.setItem(PENDING_SUBMISSION_KEY, JSON.stringify(state.pendingSubmission)); }
+    catch { /* retry still works in this page */ }
     statusMessage.textContent = "Queued…";
     const response = await authFetch("/api/spreadsheets", {
       method: "POST",
@@ -818,8 +834,10 @@ async function submitRun(promptText, overrides = {}) {
     const submitted = await response.json();
     if (!response.ok) throw new Error(submitted.error || `HTTP ${response.status}`);
     state.pendingSubmission = null;
+    try { sessionStorage.removeItem(PENDING_SUBMISSION_KEY); } catch { /* private browsing */ }
     state.pendingUpload = null;
     if (file) $("file").value = "";
+    if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
     state.runId = submitted.runId;
     const run = await pollRun(submitted.runId, (m) => { statusMessage.textContent = m; });
     if (!run) return null;
