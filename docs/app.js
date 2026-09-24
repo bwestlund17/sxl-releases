@@ -748,7 +748,10 @@ function addDownloadButtons(target, run) {
     button.addEventListener("click", () => downloadUrl(url));
     wrap.appendChild(button);
   };
-  if (run.downloadUrl) add("Download workbook", api(run.downloadUrl));
+  if (run.downloadUrl) add(run.revertedAt && run.revertJob?.runId ? "Download original result" : "Download workbook", api(run.downloadUrl));
+  if (run.revertedAt && run.revertJob?.runId) {
+    add("Download reverted workbook", api(`/api/spreadsheets/${encodeURIComponent(run.revertJob.runId)}/download`));
+  }
   for (const artifact of run.artifacts || []) {
     add(artifact === "sxl-audit-receipt.json" ? "Download audit receipt" : `Download ${artifact}`,
       api(`/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`));
@@ -940,7 +943,8 @@ async function renderRunResult(run, target) {
     addDownloadButtons(target, run);
     addAuditReview(target, run);
     if (run.downloadUrl || (run.artifacts || []).some((name) => /\.xlsx?$/i.test(name))) {
-      const loaded = await loadWorkbookFromRun(run.runId);
+      const resultRunId = run.revertedAt && run.revertJob?.runId ? run.revertJob.runId : run.runId;
+      const loaded = await loadWorkbookFromRun(resultRunId);
       if (loaded) addMessage("sys", "Result workbook loaded into the grid.");
     }
     if ((run.mutationSetIds || []).length > 0) {
