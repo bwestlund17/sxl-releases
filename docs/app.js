@@ -209,6 +209,11 @@ async function ensureToken() {
     state.token = stored;
     return stored;
   }
+  if (AUTH_ENABLED) {
+    $("accountPanel").hidden = false;
+    setAuthStatus("Sign in with email or a provider to use the hosted workspace.");
+    throw new Error("Sign in to use the hosted workspace.");
+  }
   return login();
 }
 
@@ -217,6 +222,13 @@ async function authFetch(path, options = {}) {
   const headers = Object.assign({}, options.headers || {}, { authorization: `Bearer ${token}` });
   let response = await fetch(api(path), Object.assign({}, options, { headers }));
   if (response.status === 401) {
+    if (AUTH_ENABLED) {
+      state.token = null;
+      localStorage.removeItem("sxl.platform.token");
+      $("accountPanel").hidden = false;
+      setAuthStatus("Your session expired. Sign in again to continue.");
+      throw new Error("Your session expired. Sign in again to continue.");
+    }
     await login();
     response = await fetch(api(path), Object.assign({}, options, {
       headers: Object.assign({}, options.headers || {}, { authorization: `Bearer ${state.token}` })
@@ -440,7 +452,11 @@ function renderGrid() {
 function effectiveCell(sheet, address) {
   const pending = state.pending[sheet.name];
   const staged = pending && pending.get(address);
-  if (staged) return staged.formula ? { f: staged.formula } : { v: staged.value };
+  if (staged) {
+    return staged.formula
+      ? { f: staged.formula, italic: staged.italic, wrap: staged.wrap, align: staged.align }
+      : { v: staged.value, italic: staged.italic, wrap: staged.wrap, align: staged.align };
+  }
   return (sheet.cells || {})[address];
 }
 
@@ -867,8 +883,12 @@ async function applyEdits() {
       ...(edit.formula ? { formula: edit.formula } : { value: edit.value }),
       ...(edit.format ? { format: edit.format } : {}),
       ...(edit.bold !== undefined ? { bold: edit.bold } : {}),
+      ...(edit.italic !== undefined ? { italic: edit.italic } : {}),
+      ...(edit.fontSize !== undefined ? { fontSize: edit.fontSize } : {}),
       ...(edit.fillColor ? { fillColor: edit.fillColor } : {}),
-      ...(edit.fontColor ? { fontColor: edit.fontColor } : {})
+      ...(edit.fontColor ? { fontColor: edit.fontColor } : {}),
+      ...(edit.align ? { align: edit.align } : {}),
+      ...(edit.wrap !== undefined ? { wrap: edit.wrap } : {})
     }));
     const run = await submitRun("", {
       edits,
@@ -1078,6 +1098,16 @@ window.addEventListener("DOMContentLoaded", async () => {
         stageStyle({ fillColor: button.dataset.fill });
       } else if (button.dataset.font) {
         stageStyle({ fontColor: button.dataset.font });
+      } else if (button.dataset.italic) {
+        const sheet = state.workbook.sheets[state.workbook.active];
+        const current = effectiveCell(sheet, state.selected);
+        stageStyle({ italic: !(current && current.italic) });
+      } else if (button.dataset.align) {
+        stageStyle({ align: button.dataset.align });
+      } else if (button.dataset.wrap !== undefined) {
+        const sheet = state.workbook.sheets[state.workbook.active];
+        const current = effectiveCell(sheet, state.selected);
+        stageStyle({ wrap: !(current && current.wrap) });
       }
     });
   }
@@ -1102,6 +1132,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (AUTH_ENABLED) {
     await setupAuth();
     await handleAuthRedirect();
+    if (!state.token && !localStorage.getItem("sxl.platform.token")) {
+      $("accountPanel").hidden = false;
+      setStatus("Sign in from Account to use the hosted workspace.");
+    }
   }
   loadCredits();
   loadModels();
