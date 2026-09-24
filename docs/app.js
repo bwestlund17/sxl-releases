@@ -30,6 +30,7 @@ const API_BASE = (() => {
 })();
 const api = (path) => `${API_BASE}${String(path).startsWith("/") ? path : `/${path}`}`;
 const PENDING_SUBMISSION_KEY = `sxl-pending-submission:${API_BASE}`;
+const PENDING_UPLOAD_KEY = `sxl-pending-upload:${API_BASE}`;
 try {
   const saved = JSON.parse(sessionStorage.getItem(PENDING_SUBMISSION_KEY) || "null");
   if (saved && typeof saved.key === "string" && typeof saved.bodyJson === "string") {
@@ -250,11 +251,30 @@ async function authFetch(path, options = {}) {
 }
 
 async function uploadFile(file) {
+  if (state.pendingUpload?.file === file && state.pendingUpload.fileId) {
+    return { fileId: state.pendingUpload.fileId, filename: file.name, size: file.size, reused: true };
+  }
+  const fingerprint = `${file.name}:${file.size}:${file.lastModified}`;
+  let pending = null;
+  try { pending = JSON.parse(sessionStorage.getItem(PENDING_UPLOAD_KEY) || "null"); } catch { /* private browsing */ }
+  if (!pending || pending.fingerprint !== fingerprint) {
+    pending = { fingerprint, key: crypto.randomUUID() };
+    try { sessionStorage.setItem(PENDING_UPLOAD_KEY, JSON.stringify(pending)); } catch { /* private browsing */ }
+  }
   const form = new FormData();
   form.append("file", file);
-  const response = await authFetch("/api/spreadsheets/upload", { method: "POST", body: form });
-  if (!response.ok) throw new Error(`upload failed: HTTP ${response.status}`);
-  return response.json();
+  const response = await authFetch("/api/spreadsheets/upload", {
+    method: "POST", headers: { "idempotency-key": pending.key }, body: form
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 409) {
+      try { sessionStorage.removeItem(PENDING_UPLOAD_KEY); } catch { /* private browsing */ }
+    }
+    throw new Error(body.error || `upload failed: HTTP ${response.status}`);
+  }
+  state.pendingUpload = { file, fileId: body.fileId };
+  return body;
 }
 
 // ---- Grid ------------------------------------------------------------------
@@ -837,6 +857,7 @@ async function submitRun(promptText, overrides = {}) {
     state.pendingSubmission = null;
     try { sessionStorage.removeItem(PENDING_SUBMISSION_KEY); } catch { /* private browsing */ }
     state.pendingUpload = null;
+    try { sessionStorage.removeItem(PENDING_UPLOAD_KEY); } catch { /* private browsing */ }
     if (file) $("file").value = "";
     if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
     state.runId = submitted.runId;
@@ -1063,6 +1084,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("newFile").addEventListener("click", () => {
     state.pendingFileId = null;
+    state.pendingUpload = null;
+    try { sessionStorage.removeItem(PENDING_UPLOAD_KEY); } catch { /* private browsing */ }
     $("file").value = "";
     setWorkbook(emptyWorkbook("empty-sheet.xlsx"));
     setStatus("New empty sheet. Attach or Open a file to work on real workbooks.");
