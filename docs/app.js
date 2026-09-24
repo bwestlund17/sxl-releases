@@ -759,25 +759,32 @@ function addDownloadButtons(target, run) {
   if (wrap.children.length) target.appendChild(wrap);
 }
 
-function snapshotLabel(snapshot) {
+function snapshotLabel(snapshot, other, kind) {
   if (!snapshot || typeof snapshot !== "object") return "(empty)";
-  if (snapshot.formula != null) return String(snapshot.formula);
-  if (snapshot.value != null && snapshot.value !== "") return String(snapshot.value);
-  return "(empty)";
+  if (kind === "presentation") return `style ${JSON.stringify(snapshot).slice(0, 200)}`;
+  const value = snapshot.formula != null ? String(snapshot.formula)
+    : snapshot.value != null && snapshot.value !== "" ? String(snapshot.value) : "(empty)";
+  const details = [];
+  for (const [field, label] of [["format", "format"], ["note", "note"], ["fontColor", "font color"]]) {
+    if (snapshot[field] !== other?.[field]) {
+      details.push(`${label}: ${String(snapshot[field] ?? "(none)").replace(/\s+/g, " ").slice(0, 100)}`);
+    }
+  }
+  return details.length ? `${value} [${details.join("; ")}]` : value;
 }
 
 function addAuditReview(target, run) {
   if (!(run.artifacts || []).includes("sxl-audit-receipt.json")) return;
   const button = document.createElement("button");
   button.className = "mini-btn";
-  button.textContent = "Review changed cells";
+  button.textContent = "Review audit changes";
   const panel = document.createElement("div");
   panel.className = "audit-review";
   let loaded = false;
   button.addEventListener("click", async () => {
     if (loaded) {
       panel.hidden = !panel.hidden;
-      button.textContent = panel.hidden ? "Review changed cells" : "Hide changed cells";
+      button.textContent = panel.hidden ? "Review audit changes" : "Hide audit changes";
       return;
     }
     button.disabled = true;
@@ -792,7 +799,9 @@ function addAuditReview(target, run) {
       }
       panel.textContent = "";
       const heading = document.createElement("strong");
-      heading.textContent = `${receipt.changeCount} recorded change${receipt.changeCount === 1 ? "" : "s"}${run.revertedAt ? " · reverted" : ""}`;
+      heading.textContent = `${receipt.changeCount} recorded change${receipt.changeCount === 1 ? "" : "s"}`
+        + `${receipt.warningCount ? ` · ${receipt.warningCount} review warning${receipt.warningCount === 1 ? "" : "s"}` : ""}`
+        + `${run.revertedAt ? " · reverted" : ""}`;
       panel.appendChild(heading);
       const list = document.createElement("ol");
       let shown = 0;
@@ -800,11 +809,14 @@ function addAuditReview(target, run) {
         for (const change of session.changes || []) {
           if (shown >= 100) break;
           const item = document.createElement("li");
-          const before = snapshotLabel(change.before);
-          const after = snapshotLabel(change.after);
+          const before = snapshotLabel(change.before, change.after, change.kind);
+          const after = snapshotLabel(change.after, change.before, change.kind);
           item.textContent = `${change.sheetName}!${change.address}: ${before} → ${after}`;
           if (change.sourceLabel) item.textContent += ` · Source label: ${change.sourceLabel}`;
           if (change.explanation) item.textContent += ` · ${change.explanation}`;
+          if (Array.isArray(change.warnings) && change.warnings.length) {
+            item.textContent += ` · Review: ${change.warnings.join("; ")}`;
+          }
           list.appendChild(item);
           shown++;
         }
@@ -817,7 +829,7 @@ function addAuditReview(target, run) {
         panel.appendChild(note);
       }
       loaded = true;
-      button.textContent = "Hide changed cells";
+      button.textContent = "Hide audit changes";
       button.disabled = false;
     } catch (error) {
       panel.textContent = `Audit receipt unavailable: ${error.message || error}`;
