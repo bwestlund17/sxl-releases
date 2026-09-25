@@ -758,14 +758,52 @@ function selectCell(address, cell) {
   if (target) target.classList.add("sel");
 }
 async function openWorkbookFile(file) {
+  const previousFileId = state.pendingFileId;
+  const previousUpload = state.pendingUpload;
   try {
     setStatus("Uploading file...");
     const uploaded = await uploadFile(file);
-    state.pendingFileId = uploaded.fileId;
     const previewLoaded = await loadWorkbookFromFileId(uploaded.fileId, uploaded.filename || file.name);
-    if (previewLoaded) setStatus(`Loaded ${file.name}${state.workbook?.truncated ? " with a limited grid preview" : ""}.`);
+    if (!previewLoaded) {
+      state.pendingFileId = previousFileId;
+      state.pendingUpload = previousUpload;
+      $("file").value = "";
+      return false;
+    }
+    state.pendingFileId = uploaded.fileId;
+    setStatus(`Loaded ${file.name}${state.workbook?.truncated ? " with a limited grid preview" : ""}.`);
+    return true;
+  } catch (error) {
+    state.pendingFileId = previousFileId;
+    state.pendingUpload = previousUpload;
+    $("file").value = "";
+    setStatus(`ERROR: ${error.message || error}`);
+    return false;
+  }
+}
+
+async function createNewWorkbook() {
+  const button = $("newFile");
+  button.disabled = true;
+  try {
+    const response = await fetch("blank.xlsx", { cache: "no-store" });
+    if (!response.ok) throw new Error(`blank workbook unavailable: HTTP ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length < 100 || bytes.length > 100_000 ||
+        bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
+      throw new Error("blank workbook asset is invalid");
+    }
+    const file = new File([bytes], "new-workbook.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    });
+    if (await openWorkbookFile(file)) {
+      $("file").value = "";
+      setStatus("New workbook ready. Stage edits, then Apply to create an audited run.");
+    }
   } catch (error) {
     setStatus(`ERROR: ${error.message || error}`);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -1562,14 +1600,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     const file = $("file").files && $("file").files[0];
     if (file) openWorkbookFile(file);
   });
-  $("newFile").addEventListener("click", () => {
-    state.pendingFileId = null;
-    state.pendingUpload = null;
-    try { sessionStorage.removeItem(PENDING_UPLOAD_KEY); } catch { /* private browsing */ }
-    $("file").value = "";
-    setWorkbook(emptyWorkbook("empty-sheet.xlsx"));
-    setStatus("New empty sheet. Attach or Open a file to work on real workbooks.");
-  });
+  $("newFile").addEventListener("click", createNewWorkbook);
   $("exportFile").addEventListener("click", exportWorkbook);
   $("send").addEventListener("click", () => submitRun());
   $("cancelRun").addEventListener("click", cancelActiveRun);
