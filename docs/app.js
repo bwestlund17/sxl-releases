@@ -868,6 +868,7 @@ function addDownloadButtons(target, run) {
 function snapshotLabel(snapshot, other, kind) {
   if (!snapshot || typeof snapshot !== "object") return "(empty)";
   if (kind === "presentation") return `style ${JSON.stringify(snapshot).slice(0, 200)}`;
+  if (kind === "structural") return JSON.stringify(snapshot).slice(0, 200);
   const value = snapshot.formula != null ? String(snapshot.formula)
     : snapshot.value != null && snapshot.value !== "" ? String(snapshot.value) : "(empty)";
   const details = [];
@@ -877,6 +878,15 @@ function snapshotLabel(snapshot, other, kind) {
     }
   }
   return details.length ? `${value} [${details.join("; ")}]` : value;
+}
+
+function sameReceiptIds(actual, expected) {
+  return Array.isArray(actual) && Array.isArray(expected) &&
+    actual.every((id) => typeof id === "string" && id) &&
+    expected.every((id) => typeof id === "string" && id) &&
+    new Set(actual).size === actual.length &&
+    new Set(expected).size === expected.length &&
+    actual.length === expected.length && actual.every((id) => expected.includes(id));
 }
 
 function addAuditReview(target, run) {
@@ -902,6 +912,15 @@ function addAuditReview(target, run) {
       const receipt = await response.json();
       if (receipt.schema !== "sxl.web-audit.v1" || receipt.runId !== run.runId || !Array.isArray(receipt.sessions)) {
         throw new Error("receipt does not match this run");
+      }
+      if (run.result?.runResultVersion === 1) {
+        if (!sameReceiptIds(receipt.sessions.map((session) => session.sessionId), run.result.sessionIds)) {
+          throw new Error("receipt sessions do not match this run's ledger");
+        }
+        if (receipt.sessions.every((session) => Array.isArray(session.mutationSetIds)) &&
+            !sameReceiptIds(receipt.sessions.flatMap((session) => session.mutationSetIds), run.result.mutationSetIds)) {
+          throw new Error("receipt mutation sets do not match this run's ledger");
+        }
       }
       panel.textContent = "";
       const heading = document.createElement("strong");
