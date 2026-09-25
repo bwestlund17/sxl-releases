@@ -982,6 +982,15 @@ async function renderRunResult(run, target) {
   } else {
     target.className = "msg err";
     target.textContent = `Run ${run.status}: ${run.error || "no details"}`;
+    const recorded = run.result?.mutationSetIds || run.mutationSetIds || [];
+    if (recorded.length > 0) {
+      const note = document.createElement("p");
+      note.textContent = `${recorded.length} audited mutation set${recorded.length === 1 ? "" : "s"} recorded before failure. ` +
+        (run.downloadUrl ? "Inspect the workbook and audit before retrying." : "Result workbook is unavailable; inspect the worker ledger before retrying.");
+      target.appendChild(note);
+      addDownloadButtons(target, run);
+      addAuditReview(target, run);
+    }
   }
 }
 
