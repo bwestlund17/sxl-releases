@@ -172,6 +172,23 @@ function authEmailStatus(response, email) {
   return `Sign-in email requested for ${email}. Check your inbox and spam folder; delivery can take time. Open the link to finish signing in.`;
 }
 
+async function signOutHosted() {
+  const token = localStorage.getItem("sxl.platform.token");
+  if (token) {
+    const response = await fetch(api("/logout"), {
+      method: "POST", headers: { authorization: `Bearer ${token}` }
+    });
+    if (!response.ok && response.status !== 401) {
+      throw new Error(`Could not revoke this session: HTTP ${response.status}`);
+    }
+  }
+  clearAccountDrafts();
+  state.token = null;
+  localStorage.removeItem("sxl.platform.token");
+  localStorage.removeItem("sxl.platform.username");
+  location.reload();
+}
+
 async function setupAuth() {
   $("authCard").hidden = false;
   const storedUser = localStorage.getItem("sxl.platform.username");
@@ -237,12 +254,14 @@ async function setupAuth() {
       $("authOtpBtn").disabled = false;
     }
   });
-  $("authSignOut").addEventListener("click", () => {
-    clearAccountDrafts();
-    state.token = null;
-    localStorage.removeItem("sxl.platform.token");
-    localStorage.removeItem("sxl.platform.username");
-    location.reload();
+  $("authSignOut").addEventListener("click", async () => {
+    $("authSignOut").disabled = true;
+    try {
+      await signOutHosted();
+    } catch (error) {
+      setAuthStatus(error.message || String(error));
+      $("authSignOut").disabled = false;
+    }
   });
 }
 
