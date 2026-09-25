@@ -636,6 +636,108 @@ function onGridKey(event) {
   }
 }
 
+// Excel's plain-text clipboard is tabular TSV. Parse quoted cells (including
+// embedded tabs/newlines) before staging anything, so a failed paste cannot
+// leave a partial draft. The submit API currently accepts at most 50 edits.
+function parseGridPaste(text) {
+  if (typeof text !== "string" || !text || text.length > 50000) {
+    throw new Error("Paste must contain at most 50,000 characters.");
+  }
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  let closed = false;
+  let atStart = true;
+  let cells = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') { quoted = false; closed = true; }
+      else field += ch;
+      if (field.length > 1000) throw new Error("A pasted cell exceeds the 1,000-character edit limit.");
+      continue;
+    }
+    if (ch === '"' && atStart) { quoted = true; atStart = false; continue; }
+    if (ch === "\t" || ch === "\r" || ch === "\n") {
+      row.push(field);
+      if (++cells > 50) throw new Error("Paste exceeds the 50-edit limit.");
+      if (ch === "\t") {
+        field = ""; closed = false; atStart = true;
+      } else {
+        rows.push(row);
+        row = []; field = ""; closed = false; atStart = true;
+        if (ch === "\r" && text[i + 1] === "\n") i++;
+      }
+      continue;
+    }
+    if (closed) throw new Error("Paste contains text after a quoted cell.");
+    field += ch;
+    atStart = false;
+    if (field.length > 1000) throw new Error("A pasted cell exceeds the 1,000-character edit limit.");
+  }
+  if (quoted) throw new Error("Paste has an unfinished quoted cell.");
+  if (field || row.length || !rows.length) {
+    row.push(field);
+    if (++cells > 50) throw new Error("Paste exceeds the 50-edit limit.");
+  }
+  if (row.length) rows.push(row);
+  if (!rows.length || rows.some((cells) => !cells.length)) throw new Error("Paste has no cells.");
+  return rows;
+}
+
+function stageGridPaste(text) {
+  const wb = state.workbook;
+  if (!wb) return false;
+  const sheet = wb.sheets[wb.active];
+  const start = addressParts(state.selected);
+  if (!sheet || !start) return false;
+  try {
+    const rows = parseGridPaste(text);
+    const startColumn = colToIndex(start.letters);
+    const lastRow = start.row + rows.length - 1;
+    const lastColumn = startColumn + Math.max(...rows.map((cells) => cells.length)) - 1;
+    if (lastRow > GRID_MAX_ROWS || lastColumn > GRID_MAX_COLS ||
+        (wb.truncated && (lastRow > state.rendered.rows || lastColumn > state.rendered.cols))) {
+      throw new Error("Paste exceeds the visible grid limit; choose a smaller block.");
+    }
+    const pending = activePending();
+    const edits = [];
+    for (let r = 0; r < rows.length; r++) {
+      for (let c = 0; c < rows[r].length; c++) {
+        const value = rows[r][c];
+        if (value.length > 1000) throw new Error("A pasted cell exceeds the 1,000-character edit limit.");
+        const address = `${columnToLetters(startColumn + c)}${start.row + r}`;
+        edits.push([address, value.startsWith("=") ? { formula: value } : { value }]);
+      }
+    }
+    if (new Set([...pending.keys(), ...edits.map(([address]) => address)]).size > 50) {
+      throw new Error("Paste would exceed 50 staged edits on this sheet. Apply or discard the current edits first.");
+    }
+    for (const [address, edit] of edits) pending.set(address, edit);
+    sheet.rows = Math.max(sheet.rows || 1, lastRow);
+    sheet.cols = Math.max(sheet.cols || 1, lastColumn);
+    updatePendingBar();
+    renderGrid();
+    setStatus(`Staged ${edits.length} pasted cell${edits.length === 1 ? "" : "s"} on ${sheet.name}. Apply to run the audited edit.`);
+    return true;
+  } catch (error) {
+    setStatus(`Paste not staged: ${error.message || error}`);
+    return false;
+  }
+}
+
+function onGridPaste(event) {
+  const tag = (event.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea") return;
+  const text = event.clipboardData?.getData("text/plain");
+  if (typeof text !== "string" || !text) return;
+  event.preventDefault();
+  commitActiveEditor();
+  stageGridPaste(text);
+}
+
 // Formula-bar editing: Enter stages, Esc restores the current value.
 function formulaBarCommit() {
   const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
@@ -1433,6 +1535,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     else setStatus("Nothing to refresh yet.");
   });
   $("gridScroll").addEventListener("keydown", onGridKey);
+  $("gridScroll").addEventListener("paste", onGridPaste);
   // Number-format presets: stage {value|formula, format} on the selected cell.
   for (const button of document.querySelectorAll(".fmt-btn")) {
     button.addEventListener("click", () => {
