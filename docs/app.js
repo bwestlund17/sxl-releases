@@ -754,6 +754,7 @@ function addDownloadButtons(target, run) {
     add("Download reverted workbook", api(`/api/spreadsheets/${encodeURIComponent(run.revertJob.runId)}/download`));
   }
   for (const artifact of run.artifacts || []) {
+    if (artifact === "workbook.xlsx" && run.downloadUrl) continue;
     add(artifact === "sxl-audit-receipt.json" ? "Download audit receipt" : `Download ${artifact}`,
       api(`/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`));
   }
