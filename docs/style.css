@@ -128,6 +128,8 @@ a { color: #0d6b3f; }
 #pendingWrap { display: inline-flex; align-items: center; gap: 6px; color: #b7791f; font-weight: 600; }
 #pendingWrap[hidden] { display: none; }
 #editEngine { max-width: 180px; border: 1px solid #d0d7de; border-radius: 5px; background: #fff; padding: 2px 4px; font-size: 11px; }
+#editLaneNote { padding: 4px 10px; background: #fff8e6; color: #6b4e16; border-top: 1px solid #f0ddaa; font-size: 11px; }
+#editLaneNote[hidden] { display: none; }
 #statusbar {
   display: flex; align-items: center; gap: 12px;
   padding: 3px 10px; border-top: 1px solid #d0d7de;

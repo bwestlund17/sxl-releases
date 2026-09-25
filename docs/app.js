@@ -359,14 +359,16 @@ function discardEdits() {
 
 function updatePendingBar() {
   const wb = state.workbook;
-  if (!wb) { $("pendingWrap").hidden = true; return; }
+  if (!wb) { $("pendingWrap").hidden = true; $("editLaneNote").hidden = true; return; }
   const activeName = wb.sheets[wb.active].name;
   const activePending = state.pending[activeName];
   const count = activePending ? activePending.size : 0;
   const elsewhere = Object.keys(state.pending)
     .filter((name) => name !== activeName && state.pending[name] && state.pending[name].size > 0)
     .reduce((sum, name) => sum + state.pending[name].size, 0);
-  $("pendingWrap").hidden = count === 0 && elsewhere === 0;
+  const hasPending = count > 0 || elsewhere > 0;
+  $("pendingWrap").hidden = !hasPending;
+  $("editLaneNote").hidden = !hasPending || $("editEngine").value !== "headless_value";
   $("pendingCount").textContent =
     `${count} staged edit${count === 1 ? "" : "s"}` + (elsewhere > 0 ? ` (+${elsewhere} on other sheets)` : "");
 }
@@ -1406,6 +1408,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("runsLink").addEventListener("click", loadRuns);
   $("applyEdits").addEventListener("click", applyEdits);
+  $("editEngine").addEventListener("change", updatePendingBar);
   $("discardEdits").addEventListener("click", discardEdits);
   $("refreshGrid").addEventListener("click", async () => {
     const wb = state.workbook;
