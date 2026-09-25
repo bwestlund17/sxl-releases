@@ -847,41 +847,48 @@ function addRunActivity(target, run) {
   const details = document.createElement("details");
   details.className = "run-activity";
   const label = document.createElement("summary");
-  label.textContent = "Recorded run states";
+  label.textContent = "Run activity";
   const panel = document.createElement("div");
   details.appendChild(label);
   details.appendChild(panel);
-  let loaded = false;
-  details.addEventListener("toggle", async () => {
-    if (!details.open || loaded) return;
-    panel.textContent = "Loading run states…";
+  let nextAfter = 0;
+  let loading = false;
+  let done = false;
+  const list = document.createElement("ol");
+  const load = async () => {
+    if (!details.open || loading || done) return;
+    loading = true;
+    if (nextAfter === 0) panel.textContent = "Loading run activity…";
     try {
-      const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(run.runId)}/events`);
+      const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(run.runId)}/events` +
+        (nextAfter ? `?after=${nextAfter}` : ""));
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const stream = await response.json();
       if (stream.eventStreamVersion !== 1 || stream.runId !== run.runId || !Array.isArray(stream.events)) {
         throw new Error("run event response does not match this run");
       }
-      panel.textContent = "";
-      const list = document.createElement("ol");
+      if (nextAfter === 0) { panel.textContent = ""; panel.appendChild(list); }
       for (const event of stream.events) {
+        if (!Number.isInteger(event.seq) || event.seq <= nextAfter) throw new Error("run events are out of order");
         const item = document.createElement("li");
         const timestamp = new Date(event.at).toLocaleString();
         const sets = Array.isArray(event.mutationSetIds) ? event.mutationSetIds.length : 0;
-        item.textContent = `${event.status} · ${timestamp}` +
+        item.textContent = `${event.type === "run_progress" ? event.message : event.status} · ${timestamp}` +
           (sets ? ` · ${sets} audited set${sets === 1 ? "" : "s"}` : "");
         list.appendChild(item);
+        nextAfter = event.seq;
+        if (event.type !== "run_progress" && ["completed", "failed", "cancelled"].includes(event.status)) done = true;
       }
-      panel.appendChild(list);
-      if (stream.events.length === 100) {
-        const note = document.createElement("p");
-        note.textContent = "Showing the first 100 states; use the API cursor for more.";
-        panel.appendChild(note);
-      }
-      loaded = true;
+      if (!done && details.open) setTimeout(load, stream.events.length === 100 ? 0 : 2000);
     } catch (error) {
-      panel.textContent = `Run states unavailable: ${error.message || error}`;
+      panel.textContent = `Run activity unavailable: ${error.message || error}`;
+      done = true;
+    } finally {
+      loading = false;
     }
+  };
+  details.addEventListener("toggle", async () => {
+    if (details.open) await load();
   });
   target.appendChild(details);
 }
