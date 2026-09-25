@@ -47,6 +47,9 @@ function clearAccountDrafts() {
   state.pendingFileId = null;
   state.workbook = null;
   state.pending = {};
+  $("recentFilesPanel").hidden = true;
+  $("recentFilesBtn").setAttribute("aria-expanded", "false");
+  $("recentFilesList").replaceChildren();
   try {
     sessionStorage.removeItem(PENDING_SUBMISSION_KEY);
     sessionStorage.removeItem(PENDING_UPLOAD_KEY);
@@ -825,6 +828,49 @@ async function openWorkbookFile(file, requirePreview = false) {
   }
 }
 
+async function showRecentWorkbooks() {
+  const panel = $("recentFilesPanel");
+  panel.hidden = !panel.hidden;
+  $("recentFilesBtn").setAttribute("aria-expanded", String(!panel.hidden));
+  if (panel.hidden) return;
+  const list = $("recentFilesList");
+  list.replaceChildren();
+  $("recentFilesStatus").textContent = "Loading your workbooks…";
+  try {
+    const token = await ensureToken();
+    const response = await authFetch("/api/spreadsheets/workbooks");
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    if (state.token !== token || panel.hidden) return;
+    if (!Array.isArray(body.workbooks)) throw new Error("invalid workbook list");
+    const files = body.workbooks.filter((item) => item &&
+      typeof item.fileId === "string" && typeof item.filename === "string");
+    $("recentFilesStatus").textContent = files.length ? "Select a workbook to reopen." : "No saved workbooks yet.";
+    for (const file of files.slice(0, 30)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = file.filename;
+      const detail = document.createElement("small");
+      const when = new Date(file.createdAt);
+      detail.textContent = `${Number.isFinite(when.getTime()) ? when.toLocaleString() : "Saved"} · ${Number(file.size) || 0} bytes`;
+      button.appendChild(detail);
+      button.addEventListener("click", async () => {
+        if (state.token !== token) return;
+        if (Object.values(state.pending).some((edits) => edits.size > 0) &&
+            !window.confirm("Discard staged edits and open another workbook?")) return;
+        if (await loadWorkbookFromFileId(file.fileId, file.filename)) {
+          panel.hidden = true;
+          $("recentFilesBtn").setAttribute("aria-expanded", "false");
+          setStatus(`Opened ${file.filename} from your workspace.`);
+        }
+      });
+      list.appendChild(button);
+    }
+  } catch (error) {
+    if (!panel.hidden) $("recentFilesStatus").textContent = `Could not load workbooks: ${error.message || error}`;
+  }
+}
+
 async function createNewWorkbook() {
   const button = $("newFile");
   button.disabled = true;
@@ -851,8 +897,10 @@ async function createNewWorkbook() {
 }
 
 async function loadWorkbookFromFileId(fileId, filename) {
+  const accountToken = AUTH_ENABLED ? await ensureToken() : null;
   const response = await authFetch(`/api/spreadsheets/workbook/${encodeURIComponent(fileId)}/sheet-data`);
   const body = await response.json().catch(() => ({}));
+  if (AUTH_ENABLED && state.token !== accountToken) return false;
   if (!response.ok) {
     setStatus(body.error || `no grid preview for ${filename} (HTTP ${response.status})`);
     if (!state.workbook) setWorkbook(emptyWorkbook(filename));
@@ -870,9 +918,11 @@ async function loadWorkbookFromFileId(fileId, filename) {
 }
 
 async function loadWorkbookFromRun(runId, artifact) {
+  const accountToken = AUTH_ENABLED ? await ensureToken() : null;
   const query = artifact ? `?artifact=${encodeURIComponent(artifact)}` : "";
   const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(runId)}/sheet-data${query}`);
   const body = await response.json().catch(() => ({}));
+  if (AUTH_ENABLED && state.token !== accountToken) return false;
   if (!response.ok) {
     setStatus(body.error || `no result workbook for run (HTTP ${response.status})`);
     return false;
@@ -1639,6 +1689,7 @@ async function loadModels() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   $("openFile").addEventListener("click", () => $("file").click());
+  $("recentFilesBtn").addEventListener("click", showRecentWorkbooks);
   $("file").addEventListener("change", () => {
     const file = $("file").files && $("file").files[0];
     if (file) openWorkbookFile(file);

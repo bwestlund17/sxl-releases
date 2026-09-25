@@ -18,6 +18,14 @@
       <span class="brand-mark" title="sxl — audited Excel agent">SXL</span>
       <input id="file" type="file" accept=".xlsx,.xlsm,.csv,.tsv,.txt,.pdf" hidden>
       <button id="openFile" class="tool">Open File</button>
+      <div class="recent-wrap">
+        <button id="recentFilesBtn" class="tool" aria-controls="recentFilesPanel" aria-expanded="false">Recent</button>
+        <div id="recentFilesPanel" class="panel" hidden>
+          <h2>Recent workbooks</h2>
+          <p id="recentFilesStatus" class="status"></p>
+          <div id="recentFilesList"></div>
+        </div>
+      </div>
       <button id="newFile" class="tool">New File</button>
       <button id="exportFile" class="tool">Export File</button>
     </div>

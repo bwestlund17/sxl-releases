@@ -43,6 +43,13 @@ a { color: #0d6b3f; }
   padding: 3px 10px; background: #f6f7f8; font-size: 12px;
 }
 .account-wrap { position: relative; }
+.recent-wrap { position: relative; }
+.recent-wrap .panel { left: 0; right: auto; width: min(360px, 90vw); }
+#recentFilesList { display: grid; gap: 4px; margin-top: 8px; }
+#recentFilesList button { width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis;
+  border: 1px solid #d0d7de; border-radius: 5px; background: #fff; padding: 6px 8px; }
+#recentFilesList button:hover { background: #f0f3f2; }
+#recentFilesList small { display: block; color: #57606a; margin-top: 2px; }
 .panel {
   position: absolute; right: 0; top: 34px; z-index: 30;
   width: 320px; max-height: 70vh; overflow: auto;
