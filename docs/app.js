@@ -917,8 +917,9 @@ function addAuditReview(target, run) {
         if (!sameReceiptIds(receipt.sessions.map((session) => session.sessionId), run.result.sessionIds)) {
           throw new Error("receipt sessions do not match this run's ledger");
         }
-        if (receipt.sessions.every((session) => Array.isArray(session.mutationSetIds)) &&
-            !sameReceiptIds(receipt.sessions.flatMap((session) => session.mutationSetIds), run.result.mutationSetIds)) {
+        const withSetIds = receipt.sessions.filter((session) => Array.isArray(session.mutationSetIds)).length;
+        if (withSetIds !== 0 && (withSetIds !== receipt.sessions.length ||
+            !sameReceiptIds(receipt.sessions.flatMap((session) => session.mutationSetIds), run.result.mutationSetIds))) {
           throw new Error("receipt mutation sets do not match this run's ledger");
         }
       }
