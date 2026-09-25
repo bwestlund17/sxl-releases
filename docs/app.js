@@ -1157,6 +1157,7 @@ async function applyEdits() {
     .sort((a, b) => (a === activeName ? -1 : b === activeName ? 1 : 0));
   if (!sheetNames.length) return;
   const executionLane = $("editEngine").value;
+  const committed = [];
   if (executionLane === "headless_value") {
     if (!/\.xlsx$/i.test(wb.fileName || "")) {
       setStatus("Office-free edits require a backing .xlsx workbook.");
@@ -1215,14 +1216,23 @@ async function applyEdits() {
       mode: "action",
       executionLane
     });
-    // On failure: stop the chain and keep this sheet's edits staged.
-    if (!run || run.status !== "completed") return;
+    // Each sheet is a separate durable run. Preserve and identify earlier
+    // commits if a later run fails or its outcome cannot be confirmed.
+    if (!run || run.status !== "completed") {
+      if (committed.length) {
+        const prior = committed.map(({ sheet, runId }) => `${sheet} (${runId.slice(0, 8)})`).join(", ");
+        setStatus(`Partial edit: ${prior} committed. ${sheetName} ${run ? `ended ${run.status}` : "has an unconfirmed outcome"}. Review History before retrying.`);
+      }
+      return;
+    }
     if (state.workbook?.runId !== run.runId) {
       state.pending = stagedBySheet;
       updatePendingBar();
-      setStatus("The run completed, but its workbook could not be loaded. Open it from runs before applying the remaining edits.");
+      const prior = committed.map(({ sheet, runId }) => `${sheet} (${runId.slice(0, 8)})`).join(", ");
+      setStatus(`${prior ? `Partial edit: ${prior} committed. ` : ""}${sheetName} run ${run.runId.slice(0, 8)} completed, but its workbook could not be loaded. Open it from History before applying the remaining edits.`);
       return;
     }
+    committed.push({ sheet: sheetName, runId: run.runId });
     // Success: submitRun reloaded the result into state.workbook; drop this
     // sheet's staged edits and let the next iteration chain from the new run.
     delete stagedBySheet[sheetName];
