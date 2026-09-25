@@ -200,6 +200,8 @@ a { color: #0d6b3f; }
 .send-btn:disabled { background: #9cc5b2; }
 #composerMeta { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; }
 #composerMeta select { border: 1px solid #d0d7de; border-radius: 6px; padding: 2px 4px; background: #ffffff; }
+#runPrice, #editPrice { color: #286443; white-space: nowrap; font-weight: 600; }
+.billing-note { margin: 6px 0 0; color: #436252; font-size: 12px; }
 .linkish { color: #0d6b3f; cursor: pointer; text-decoration: underline; }
 #runs { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
 #downloads { margin-top: 6px; }

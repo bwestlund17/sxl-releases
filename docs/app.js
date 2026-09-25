@@ -11,6 +11,7 @@ const state = {
   pendingFileId: null,
   pendingUpload: null,
   pendingSubmission: null,
+  runPrices: null,
   // staged web-grid edits, keyed by sheet name: Map<address, {value?|formula?}>
   pending: {}
 };
@@ -42,6 +43,7 @@ const OAUTH_PROVIDERS = ["google", "github", "azure", "apple", "gitlab", "bitbuc
 const PROVIDER_LABELS = { azure: "Microsoft", linkedin_oidc: "LinkedIn" };
 
 function clearAccountDrafts() {
+  state.runPrices = null;
   state.pendingSubmission = null;
   state.pendingUpload = null;
   state.pendingFileId = null;
@@ -57,6 +59,41 @@ function clearAccountDrafts() {
   } catch { /* private browsing may deny storage */ }
   $("prompt").value = "";
   $("file").value = "";
+  $("runPrice").hidden = true;
+  $("editPrice").hidden = true;
+}
+
+function priceKind(body) {
+  return body.executionLane === "headless_value" ? "headless_value" :
+    body.mode === "ask" ? "ask" : "live_action";
+}
+
+function renderRunPrices() {
+  const catalog = state.runPrices;
+  const billed = catalog && catalog.billed === true;
+  const chatKind = $("mode").value === "ask" ? "ask" : "live_action";
+  const editKind = $("editEngine").value === "headless_value" ? "headless_value" : "live_action";
+  for (const [id, kind] of [["runPrice", chatKind], ["editPrice", editKind]]) {
+    const element = $(id);
+    const amount = Number(catalog?.prices?.[kind]);
+    element.hidden = !billed || !Number.isFinite(amount) || amount <= 0;
+    if (!element.hidden) {
+      element.textContent = `${amount} credit${amount === 1 ? "" : "s"}`;
+      element.title = "Reserved when queued; fully refunded if the run fails or is cancelled. Undo is included.";
+    }
+  }
+}
+
+async function loadRunPrices() {
+  const response = await authFetch("/v1/credits/prices");
+  if (!response.ok) throw new Error("Could not confirm the current run price");
+  const catalog = await response.json();
+  if (catalog.billed === true && ["headless_value", "ask", "live_action"].some(
+    (kind) => !Number.isInteger(Number(catalog.prices?.[kind])) || Number(catalog.prices[kind]) <= 0
+  )) throw new Error("The run price catalog is unavailable");
+  state.runPrices = catalog;
+  renderRunPrices();
+  return catalog;
 }
 
 try {
@@ -1456,6 +1493,16 @@ async function renderRunResult(run, target) {
       addAuditReview(target, run);
     }
   }
+  if (run.billing && Number.isFinite(Number(run.billing.credits))) {
+    const note = document.createElement("p");
+    const credits = Number(run.billing.credits);
+    note.className = "billing-note";
+    note.textContent = run.billing.state === "refunded"
+      ? `${credits} credit${credits === 1 ? "" : "s"} refunded.`
+      : run.billing.state === "included" ? "Undo included at no extra charge."
+      : `${credits} credit${credits === 1 ? "" : "s"} ${run.billing.state === "reserved" ? "reserved" : "charged"}.`;
+    target.appendChild(note);
+  }
   addRunActivity(target, run);
 }
 
@@ -1499,19 +1546,35 @@ async function submitRun(promptText, overrides = {}) {
       if (overrides.executionLane) body.executionLane = overrides.executionLane;
     }
     if (!overrides.edits && $("model").value) body.model = $("model").value;
+    const priceCatalog = await loadRunPrices();
+    if (priceCatalog.billed) {
+      const amount = Number(priceCatalog.prices[priceKind(body)]);
+      body.maxCredits = amount;
+      statusMessage.textContent = `Reserving ${amount} credit${amount === 1 ? "" : "s"}…`;
+    }
     const bodyJson = JSON.stringify(body);
     if (!state.pendingSubmission || state.pendingSubmission.bodyJson !== bodyJson) {
       state.pendingSubmission = { bodyJson, key: crypto.randomUUID() };
     }
     try { sessionStorage.setItem(PENDING_SUBMISSION_KEY, JSON.stringify(state.pendingSubmission)); }
     catch { /* retry still works in this page */ }
-    statusMessage.textContent = "Queued…";
+    if (!priceCatalog.billed) statusMessage.textContent = "Queued…";
     const response = await authFetch("/api/spreadsheets", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": state.pendingSubmission.key },
       body: bodyJson
     });
     const submitted = await response.json();
+    if (response.status === 402 && submitted.error === "insufficient_credits") {
+      throw new Error("Not enough credits for this run. Open Account to add credits.");
+    }
+    if (response.status === 412 && submitted.error === "run_price_exceeds_quote") {
+      await loadRunPrices();
+      throw new Error("The run price changed. Check the new price and submit again.");
+    }
+    if (response.status === 428 && submitted.error === "billing_quote_required") {
+      throw new Error("This run needs a current price quote. Refresh the page and submit again.");
+    }
     if (!response.ok) throw new Error(submitted.error || `HTTP ${response.status}`);
     state.pendingSubmission = null;
     try { sessionStorage.removeItem(PENDING_SUBMISSION_KEY); } catch { /* private browsing */ }
@@ -1520,6 +1583,7 @@ async function submitRun(promptText, overrides = {}) {
     if (file && !overrides.initFile) $("file").value = "";
     if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
     state.runId = submitted.runId;
+    loadCredits(); // reservation is atomic with queue insertion
     statusMessage.textContent = "";
     const statusLine = document.createElement("span");
     statusMessage.appendChild(statusLine);
@@ -1792,6 +1856,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("runsLink").addEventListener("click", loadRuns);
   $("applyEdits").addEventListener("click", applyEdits);
   $("editEngine").addEventListener("change", updatePendingBar);
+  $("editEngine").addEventListener("change", renderRunPrices);
+  $("mode").addEventListener("change", renderRunPrices);
   $("discardEdits").addEventListener("click", discardEdits);
   $("refreshGrid").addEventListener("click", async () => {
     const wb = state.workbook;
@@ -1887,6 +1953,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   }
   await restoreSelectedWorkbook();
   loadCredits();
+  loadRunPrices().catch(() => { /* submit checks again before reserving credits */ });
   loadModels();
   loadBilling();
   loadRuns();

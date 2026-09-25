@@ -108,6 +108,7 @@
             <option value="headless_value">Office-free values (.xlsx only)</option>
           </select>
           <button id="applyEdits" class="mini-btn primary" title="Run the audited --set edits on this sheet">Apply</button>
+          <span id="editPrice" hidden></span>
           <button id="discardEdits" class="mini-btn" title="Discard staged edits on this sheet">Discard</button>
         </span>
         <span class="spacer"></span>
@@ -145,6 +146,7 @@
           <option value="ask">Ask</option>
         </select>
         <select id="model" title="model"><option value="">Automatic (worker default)</option></select>
+        <span id="runPrice" hidden></span>
         <span class="spacer"></span>
         <button id="cancelRun" class="mini-btn" title="Cancel the active run" hidden>Cancel run</button>
         <span id="runsLink" class="linkish" title="recent runs">runs</span>
