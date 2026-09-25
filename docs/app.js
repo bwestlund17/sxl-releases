@@ -1017,21 +1017,24 @@ function addMessage(kind, text) {
 function addDownloadButtons(target, run) {
   const wrap = document.createElement("div");
   wrap.className = "dl";
-  const add = (label, url) => {
+  const add = (label, url, filename) => {
     const button = document.createElement("button");
     button.className = "secondary";
     button.textContent = label;
-    button.addEventListener("click", () => downloadUrl(url));
+    button.addEventListener("click", () => downloadUrl(url, filename));
     wrap.appendChild(button);
   };
-  if (run.downloadUrl) add(run.revertedAt && run.revertJob?.runId ? "Download original result" : "Download workbook", run.downloadUrl);
+  if (run.downloadUrl) add(run.revertedAt && run.revertJob?.runId ? "Download original result" : "Download workbook",
+    run.downloadUrl, `sxl-run-${run.runId}.xlsx`);
   if (run.revertedAt && run.revertJob?.runId) {
-    add("Download reverted workbook", `/api/spreadsheets/${encodeURIComponent(run.revertJob.runId)}/download`);
+    add("Download reverted workbook", `/api/spreadsheets/${encodeURIComponent(run.revertJob.runId)}/download`,
+      `sxl-run-${run.revertJob.runId}.xlsx`);
   }
   for (const artifact of run.artifacts || []) {
     if (artifact === "workbook.xlsx" && run.downloadUrl) continue;
     add(artifact === "sxl-audit-receipt.json" ? "Download audit receipt" : `Download ${artifact}`,
-      `/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`);
+      `/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`,
+      `sxl-run-${run.runId}-${artifact}`);
   }
   if (wrap.children.length) target.appendChild(wrap);
 }
@@ -1262,7 +1265,7 @@ function addRunActivity(target, run) {
   target.appendChild(details);
 }
 
-async function downloadUrl(url) {
+async function downloadUrl(url, filename) {
   const response = await authFetch(url);
   if (!response.ok) {
     setStatus(`download failed: HTTP ${response.status}`);
@@ -1271,7 +1274,7 @@ async function downloadUrl(url) {
   const blob = await response.blob();
   const anchor = document.createElement("a");
   anchor.href = URL.createObjectURL(blob);
-  anchor.download = (url.split("/").pop() || "download").replace(/[?].*$/, "");
+  anchor.download = filename || (url.split("/").pop() || "download").replace(/[?].*$/, "");
   anchor.click();
   URL.revokeObjectURL(anchor.href);
 }
