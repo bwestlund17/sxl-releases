@@ -1058,12 +1058,7 @@ async function exportWorkbook() {
     setStatus(`export failed: HTTP ${response.status}`);
     return;
   }
-  const blob = await response.blob();
-  const anchor = document.createElement("a");
-  anchor.href = URL.createObjectURL(blob);
-  anchor.download = wb.fileName || "workbook.xlsx";
-  anchor.click();
-  URL.revokeObjectURL(anchor.href);
+  saveBlob(await response.blob(), wb.fileName || "workbook.xlsx");
 }
 
 // ---- Chat transcript -------------------------------------------------------
@@ -1327,18 +1322,25 @@ function addRunActivity(target, run) {
   target.appendChild(details);
 }
 
+function saveBlob(blob, filename) {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // The browser may start the download after click() returns.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 5_000);
+}
+
 async function downloadUrl(url, filename) {
   const response = await authFetch(url);
   if (!response.ok) {
     setStatus(`download failed: HTTP ${response.status}`);
     return;
   }
-  const blob = await response.blob();
-  const anchor = document.createElement("a");
-  anchor.href = URL.createObjectURL(blob);
-  anchor.download = filename || (url.split("/").pop() || "download").replace(/[?].*$/, "");
-  anchor.click();
-  URL.revokeObjectURL(anchor.href);
+  saveBlob(await response.blob(), filename || (url.split("/").pop() || "download").replace(/[?].*$/, ""));
 }
 
 async function pollRun(runId, statusMessage) {
