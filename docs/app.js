@@ -1009,7 +1009,14 @@ async function loadRuns() {
 async function renderRunResult(run, target) {
   if (run.status === "completed") {
     target.className = "msg done";
-    target.textContent = run.summary ? String(run.summary).slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
+    const summary = String(run.summary || "").split(/\r?\n/).filter((line) => {
+      try {
+        const value = JSON.parse(line);
+        return !(value && typeof value === "object" && value.ledgerResultVersion !== undefined &&
+          typeof value.sessionId === "string");
+      } catch { return true; }
+    }).join("\n").trim();
+    target.textContent = summary ? summary.slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
     addDownloadButtons(target, run);
     addAuditReview(target, run);
     if (run.downloadUrl || (run.artifacts || []).some((name) => /\.xlsx?$/i.test(name))) {
