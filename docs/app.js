@@ -757,26 +757,30 @@ function selectCell(address, cell) {
   const target = $("grid").querySelector(`td[data-addr="${address}"]`);
   if (target) target.classList.add("sel");
 }
-async function openWorkbookFile(file) {
+async function openWorkbookFile(file, requirePreview = false) {
   const previousFileId = state.pendingFileId;
   const previousUpload = state.pendingUpload;
   try {
     setStatus("Uploading file...");
     const uploaded = await uploadFile(file);
+    state.pendingFileId = uploaded.fileId;
     const previewLoaded = await loadWorkbookFromFileId(uploaded.fileId, uploaded.filename || file.name);
     if (!previewLoaded) {
-      state.pendingFileId = previousFileId;
-      state.pendingUpload = previousUpload;
-      $("file").value = "";
+      if (requirePreview) {
+        state.pendingFileId = previousFileId;
+        state.pendingUpload = previousUpload;
+        $("file").value = "";
+      }
       return false;
     }
-    state.pendingFileId = uploaded.fileId;
     setStatus(`Loaded ${file.name}${state.workbook?.truncated ? " with a limited grid preview" : ""}.`);
     return true;
   } catch (error) {
-    state.pendingFileId = previousFileId;
-    state.pendingUpload = previousUpload;
-    $("file").value = "";
+    if (requirePreview) {
+      state.pendingFileId = previousFileId;
+      state.pendingUpload = previousUpload;
+      $("file").value = "";
+    }
     setStatus(`ERROR: ${error.message || error}`);
     return false;
   }
@@ -796,7 +800,7 @@ async function createNewWorkbook() {
     const file = new File([bytes], "new-workbook.xlsx", {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     });
-    if (await openWorkbookFile(file)) {
+    if (await openWorkbookFile(file, true)) {
       $("file").value = "";
       setStatus("New workbook ready. Stage edits, then Apply to create an audited run.");
     }
