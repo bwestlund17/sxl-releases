@@ -31,6 +31,7 @@ const API_BASE = (() => {
 const api = (path) => `${API_BASE}${String(path).startsWith("/") ? path : `/${path}`}`;
 const PENDING_SUBMISSION_KEY = `sxl-pending-submission:${API_BASE}`;
 const PENDING_UPLOAD_KEY = `sxl-pending-upload:${API_BASE}`;
+const SELECTED_WORKBOOK_KEY = `sxl-selected-workbook:${API_BASE}`;
 
 // Supabase Auth config (injected as meta tags on the hosted page). Absent in
 // local mode, where the app keeps using the anonymous local token.
@@ -49,6 +50,7 @@ function clearAccountDrafts() {
   try {
     sessionStorage.removeItem(PENDING_SUBMISSION_KEY);
     sessionStorage.removeItem(PENDING_UPLOAD_KEY);
+    sessionStorage.removeItem(SELECTED_WORKBOOK_KEY);
   } catch { /* private browsing may deny storage */ }
   $("prompt").value = "";
   $("file").value = "";
@@ -324,7 +326,7 @@ function emptyWorkbook(name) {
   };
 }
 
-function setWorkbook(workbook) {
+function setWorkbook(workbook, remember = true) {
   state.workbook = workbook;
   state.selected = "A1";
   state.pending = {};
@@ -332,6 +334,43 @@ function setWorkbook(workbook) {
   $("workbookTitle").textContent = workbook.fileName || "untitled";
   renderSheetTabs();
   renderGrid();
+  if (remember) {
+    const reference = workbook.runId
+      ? { runId: workbook.runId }
+      : workbook.fileId ? { fileId: workbook.fileId, fileName: workbook.fileName } : null;
+    try {
+      if (reference) {
+        sessionStorage.setItem(SELECTED_WORKBOOK_KEY, JSON.stringify({
+          ...reference,
+          account: AUTH_ENABLED ? localStorage.getItem("sxl.platform.username") : null
+        }));
+      } else sessionStorage.removeItem(SELECTED_WORKBOOK_KEY);
+    } catch { /* private browsing may deny storage */ }
+  }
+}
+
+async function restoreSelectedWorkbook() {
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(SELECTED_WORKBOOK_KEY) || "null"); }
+  catch { /* private browsing or stale data */ }
+  if (!saved) return false;
+  const account = AUTH_ENABLED ? localStorage.getItem("sxl.platform.username") : null;
+  if (AUTH_ENABLED && (!localStorage.getItem("sxl.platform.token") || !account || saved.account !== account)) {
+    try { sessionStorage.removeItem(SELECTED_WORKBOOK_KEY); } catch { /* private browsing */ }
+    return false;
+  }
+  try {
+    const loaded = typeof saved.runId === "string" && saved.runId
+      ? await loadWorkbookFromRun(saved.runId)
+      : typeof saved.fileId === "string" && saved.fileId && typeof saved.fileName === "string"
+        ? await loadWorkbookFromFileId(saved.fileId, saved.fileName) : false;
+    if (loaded) {
+      setStatus(`Restored ${state.workbook.fileName} from your workspace.`);
+      return true;
+    }
+  } catch { /* missing or inaccessible workbook is cleared below */ }
+  try { sessionStorage.removeItem(SELECTED_WORKBOOK_KEY); } catch { /* private browsing */ }
+  return false;
 }
 
 function activePending() {
@@ -1705,7 +1744,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   for (const chip of document.querySelectorAll(".chip-prompt")) {
     chip.addEventListener("click", () => submitRun(chip.dataset.prompt));
   }
-  setWorkbook(emptyWorkbook("empty-sheet.xlsx"));
+  setWorkbook(emptyWorkbook("empty-sheet.xlsx"), false);
   if (AUTH_ENABLED) {
     await setupAuth();
     await handleAuthRedirect();
@@ -1714,6 +1753,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       setStatus("Sign in from Account to use the hosted workspace.");
     }
   }
+  await restoreSelectedWorkbook();
   loadCredits();
   loadModels();
   loadBilling();
