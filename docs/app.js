@@ -611,7 +611,14 @@ function renderGrid() {
       }
       if (pendingEdit) td.classList.add("pending");
       if (address === state.selected) td.classList.add("sel");
-      td.addEventListener("click", () => {
+      td.addEventListener("pointerdown", (event) => {
+        if (event.target.closest?.(".cell-editor")) return;
+        // Keep the formula editor focused until the click can insert a reference.
+        if (formulaInput()) event.preventDefault();
+      });
+      td.addEventListener("click", (event) => {
+        if (event.target.closest?.(".cell-editor")) return;
+        if (insertFormulaReference(address)) return;
         // Excel-like: clicking a cell moves keyboard focus to the grid so
         // arrows/type-to-edit work immediately.
         $("gridScroll").focus({ preventScroll: true });
@@ -670,6 +677,47 @@ function moveSelection(dr, dc) {
 // blur/focusout (window without OS focus), so the editor is tracked and
 // commitActiveEditor() runs before every navigation/render path.
 let activeEditor = null;
+let formulaPoint = null;
+function formulaInput() {
+  if (activeEditor && document.activeElement === activeEditor.input &&
+      activeEditor.input.value.startsWith("=")) return activeEditor.input;
+  const bar = $("formulaBar");
+  return document.activeElement === bar && bar.value.startsWith("=") ? bar : null;
+}
+function clearFormulaPoint() {
+  formulaPoint = null;
+}
+function insertFormulaReference(address) {
+  const input = formulaInput();
+  if (!input) return false;
+  const previous = formulaPoint?.input === input ? formulaPoint : null;
+  const start = previous ? previous.start : (input.selectionStart ?? input.value.length);
+  const end = previous ? previous.end : (input.selectionEnd ?? start);
+  input.value = input.value.slice(0, start) + address + input.value.slice(end);
+  input.setSelectionRange(start + address.length, start + address.length);
+  formulaPoint = { input, start, end: start + address.length, address };
+  input.focus({ preventScroll: true });
+  return true;
+}
+function pointFormulaWithArrow(event, origin) {
+  if (event.ctrlKey || event.metaKey || event.altKey || !formulaInput()) return false;
+  const step = {
+    ArrowUp: [-1, 0], ArrowDown: [1, 0],
+    ArrowLeft: [0, -1], ArrowRight: [0, 1]
+  }[event.key];
+  if (!step) return false;
+  const from = addressParts(formulaPoint?.address || origin);
+  if (!from) return false;
+  const rendered = state.rendered || { rows: 40, cols: 12 };
+  const row = Math.min(rendered.rows, Math.max(1, from.row + step[0]));
+  const col = Math.min(rendered.cols, Math.max(1, colToIndex(from.letters) + step[1]));
+  const address = `${columnToLetters(col)}${row}`;
+  event.preventDefault();
+  event.stopPropagation();
+  insertFormulaReference(address);
+  $("grid").querySelector(`td[data-addr="${address}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
+}
 function commitActiveEditor() {
   const editor = activeEditor;
   if (editor) editor.commit();
@@ -697,6 +745,7 @@ function beginCellEdit(address, initial) {
     activeEditor = null;
     if (stale) return;
     done = true;
+    clearFormulaPoint();
     const value = input.value.trim();
     if (value === existing) {
       renderGrid();
@@ -717,13 +766,18 @@ function beginCellEdit(address, initial) {
       event.stopPropagation();
       cancelled = true;
       activeEditor = null;
+      clearFormulaPoint();
       renderGrid();
       $("gridScroll").focus({ preventScroll: true });
-    } else if (event.key.startsWith("Arrow") || event.key === "Tab") {
-      // Keep the caret in the editor; do not navigate the grid.
+    } else if (event.key.startsWith("Arrow")) {
+      if (pointFormulaWithArrow(event, address)) return;
+      event.stopPropagation();
+    } else if (event.key === "Tab") {
       event.stopPropagation();
     }
   });
+  input.addEventListener("input", clearFormulaPoint);
+  input.addEventListener("click", clearFormulaPoint);
   // Blur commit still works for real focused windows; the tracked paths
   // above cover contexts where the browser never dispatches blur.
   input.addEventListener("blur", commit);
@@ -860,6 +914,7 @@ function onGridPaste(event) {
 
 // Formula-bar editing: Enter stages, Esc restores the current value.
 function formulaBarCommit() {
+  clearFormulaPoint();
   const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
   if (!sheet) return;
   const text = $("formulaBar").value.trim();
@@ -1970,14 +2025,19 @@ window.addEventListener("DOMContentLoaded", async () => {
       formulaBarCommit();
       $("formulaBar").blur();
     } else if (event.key === "Escape") {
+      clearFormulaPoint();
       const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
       $("formulaBar").value = sheet ? (() => {
         const current = effectiveCell(sheet, state.selected);
         return current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
       })() : "";
       $("formulaBar").blur();
+    } else if (event.key.startsWith("Arrow")) {
+      pointFormulaWithArrow(event, state.selected);
     }
   });
+  $("formulaBar").addEventListener("input", clearFormulaPoint);
+  $("formulaBar").addEventListener("click", clearFormulaPoint);
   for (const chip of document.querySelectorAll(".chip-prompt")) {
     chip.addEventListener("click", () => submitRun(chip.dataset.prompt));
   }
