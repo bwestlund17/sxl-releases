@@ -979,7 +979,13 @@ async function loadRuns() {
           const body = await statusResponse.json().catch(() => ({}));
           if (!statusResponse.ok) throw new Error(body.error || `HTTP ${statusResponse.status}`);
           const result = ["completed", "failed", "cancelled"].includes(body.status)
-            ? body : await pollRun(body.runId, (message) => { card.textContent = message; });
+            ? body : await (async () => {
+              card.textContent = "";
+              const statusLine = document.createElement("span");
+              card.appendChild(statusLine);
+              addRunActivity(card, body);
+              return pollRun(body.runId, (message) => { statusLine.textContent = message; });
+            })();
           if (result) await renderRunResult(result, card);
           loadRuns();
         } catch (error) {
@@ -1116,7 +1122,11 @@ async function submitRun(promptText, overrides = {}) {
     if (file && !overrides.initFile) $("file").value = "";
     if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
     state.runId = submitted.runId;
-    const run = await pollRun(submitted.runId, (m) => { statusMessage.textContent = m; });
+    statusMessage.textContent = "";
+    const statusLine = document.createElement("span");
+    statusMessage.appendChild(statusLine);
+    addRunActivity(statusMessage, submitted);
+    const run = await pollRun(submitted.runId, (m) => { statusLine.textContent = m; });
     if (!run) return null;
     await renderRunResult(run, statusMessage);
     loadCredits();
@@ -1325,6 +1335,10 @@ async function loadModels() {
     const body = await response.json();
     const select = $("model");
     select.innerHTML = "";
+    const automatic = document.createElement("option");
+    automatic.value = "";
+    automatic.textContent = "Automatic (worker default)";
+    select.appendChild(automatic);
     for (const model of body.models || []) {
       const option = document.createElement("option");
       option.value = model.id;
