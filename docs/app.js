@@ -593,7 +593,13 @@ function renderGrid() {
         } else if (cell.f) {
           // Formula preview: compute typical formulas client-side; unsupported
           // ones (#NAME?) render as literal text instead of a fake value.
-          const computed = computeStagedFormula(cell.f);
+          // An unfinished formula must not abort the entire grid render.
+          let computed;
+          try {
+            computed = computeStagedFormula(cell.f);
+          } catch (error) {
+            computed = isFormulaError(error) ? error : formulaError(FORMULA_ERRORS.value);
+          }
           if (isFormulaError(computed) && computed.__err === FORMULA_ERRORS.name) {
             td.textContent = cell.f;
             td.classList.add("fonly");
@@ -611,11 +617,11 @@ function renderGrid() {
       }
       if (pendingEdit) td.classList.add("pending");
       if (address === state.selected) td.classList.add("sel");
-      td.addEventListener("pointerdown", (event) => {
-        if (event.target.closest?.(".cell-editor")) return;
-        // Keep the formula editor focused until the click can insert a reference.
-        if (formulaInput()) event.preventDefault();
-      });
+      // Capture before the browser can blur and commit the editor. Both events
+      // are needed: some browser/input paths deliver mouse events without a
+      // usable pointer event. Replacing the same pointed address is harmless.
+      td.addEventListener("pointerdown", (event) => captureFormulaPointer(event, address));
+      td.addEventListener("mousedown", (event) => captureFormulaPointer(event, address));
       td.addEventListener("click", (event) => {
         if (event.target.closest?.(".cell-editor")) return;
         if (insertFormulaReference(address)) return;
@@ -624,7 +630,7 @@ function renderGrid() {
         $("gridScroll").focus({ preventScroll: true });
         selectCell(address, effectiveCell(sheet, address));
       });
-      td.addEventListener("dblclick", () => beginCellEdit(address));
+      td.addEventListener("dblclick", () => { if (!formulaInput()) beginCellEdit(address); });
       tr.appendChild(td);
     }
     table.appendChild(tr);
@@ -679,8 +685,7 @@ function moveSelection(dr, dc) {
 let activeEditor = null;
 let formulaPoint = null;
 function formulaInput() {
-  if (activeEditor && document.activeElement === activeEditor.input &&
-      activeEditor.input.value.startsWith("=")) return activeEditor.input;
+  if (activeEditor && activeEditor.input.value.startsWith("=")) return activeEditor.input;
   const bar = $("formulaBar");
   return document.activeElement === bar && bar.value.startsWith("=") ? bar : null;
 }
@@ -698,6 +703,11 @@ function insertFormulaReference(address) {
   formulaPoint = { input, start, end: start + address.length, address };
   input.focus({ preventScroll: true });
   return true;
+}
+function captureFormulaPointer(event, address) {
+  if (event.target.closest?.(".cell-editor") || !formulaInput()) return false;
+  event.preventDefault();
+  return insertFormulaReference(address);
 }
 function pointFormulaWithArrow(event, origin) {
   if (event.ctrlKey || event.metaKey || event.altKey || !formulaInput()) return false;
