@@ -838,30 +838,54 @@ async function showRecentWorkbooks() {
   $("recentFilesStatus").textContent = "Loading your workbooks…";
   try {
     const token = await ensureToken();
-    const response = await authFetch("/api/spreadsheets/workbooks");
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    const responses = await Promise.allSettled([
+      authFetch("/api/spreadsheets/workbooks"), authFetch("/api/spreadsheets/runs")
+    ]);
+    const bodies = await Promise.all(responses.map(async (result) =>
+      result.status === "fulfilled" && result.value.ok
+        ? result.value.json().catch(() => null) : null));
     if (state.token !== token || panel.hidden) return;
-    if (!Array.isArray(body.workbooks)) throw new Error("invalid workbook list");
-    const files = body.workbooks.filter((item) => item &&
-      typeof item.fileId === "string" && typeof item.filename === "string");
-    $("recentFilesStatus").textContent = files.length ? "Select a workbook to reopen." : "No saved workbooks yet.";
-    for (const file of files.slice(0, 30)) {
+    if (!bodies.some((body) => body && (Array.isArray(body.workbooks) || Array.isArray(body.runs)))) {
+      throw new Error("workbook history unavailable");
+    }
+    const files = (Array.isArray(bodies[0]?.workbooks) ? bodies[0].workbooks : []).filter((item) => item &&
+      typeof item.fileId === "string" && typeof item.filename === "string")
+      .map((item) => ({ ...item, kind: "file" }));
+    const runs = (Array.isArray(bodies[1]?.runs) ? bodies[1].runs : []).filter((run) => run && run.status === "completed" &&
+      typeof run.runId === "string")
+      .map((run) => ({ run, artifact: (Array.isArray(run.artifacts) ? run.artifacts : [])
+        .find((name) => typeof name === "string" && /\.xlsx?$/i.test(name)) }))
+      .filter(({ run, artifact }) => run.downloadUrl || artifact)
+      .map(({ run, artifact }) => ({
+        kind: "run", runId: run.runId,
+        filename: run.downloadUrl ? "workbook.xlsx" : artifact,
+        createdAt: run.updatedAt || run.createdAt,
+        prompt: String(run.prompt || "").slice(0, 40)
+      }));
+    const items = [...files, ...runs]
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+      .slice(0, 30);
+    $("recentFilesStatus").textContent = items.length ? "Select a workbook to reopen." : "No saved workbooks yet.";
+    for (const file of items) {
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = file.filename;
+      button.textContent = file.kind === "run" && file.prompt
+        ? `${file.filename} · ${file.prompt}` : file.filename;
       const detail = document.createElement("small");
       const when = new Date(file.createdAt);
-      detail.textContent = `${Number.isFinite(when.getTime()) ? when.toLocaleString() : "Saved"} · ${Number(file.size) || 0} bytes`;
+      detail.textContent = `${Number.isFinite(when.getTime()) ? when.toLocaleString() : "Saved"} · ${
+        file.kind === "run" ? `Run ${file.runId.slice(0, 8)}` : `${Number(file.size) || 0} bytes`}`;
       button.appendChild(detail);
       button.addEventListener("click", async () => {
         if (state.token !== token) return;
         if (Object.values(state.pending).some((edits) => edits.size > 0) &&
             !window.confirm("Discard staged edits and open another workbook?")) return;
-        if (await loadWorkbookFromFileId(file.fileId, file.filename)) {
+        const loaded = file.kind === "run"
+          ? await loadWorkbookFromRun(file.runId) : await loadWorkbookFromFileId(file.fileId, file.filename);
+        if (loaded) {
           panel.hidden = true;
           $("recentFilesBtn").setAttribute("aria-expanded", "false");
-          setStatus(`Opened ${file.filename} from your workspace.`);
+          setStatus(`Opened ${state.workbook.fileName} from your workspace.`);
         }
       });
       list.appendChild(button);
