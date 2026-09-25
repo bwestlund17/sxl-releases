@@ -931,6 +931,25 @@ function addAuditReview(target, run) {
       }
       panel.appendChild(list);
       for (const session of receipt.sessions) {
+        if (session.prompt || (Array.isArray(session.sources) && session.sources.length)) {
+          const context = document.createElement("details");
+          const summary = document.createElement("summary");
+          summary.textContent = `Request and inputs for session ${session.sessionId}`;
+          context.appendChild(summary);
+          const request = document.createElement("p");
+          request.textContent = `Request: ${String(session.prompt || "(not recorded)").slice(0, 1000)}`;
+          context.appendChild(request);
+          if (String(session.prompt || "").length > 1000) {
+            const note = document.createElement("p");
+            note.textContent = "Request shortened here; download the receipt for the full text.";
+            context.appendChild(note);
+          }
+          const sources = document.createElement("p");
+          sources.textContent = `Inputs: ${Array.isArray(session.sources) && session.sources.length
+            ? session.sources.map((source) => String(source)).join(", ") : "No source attachments recorded"}`;
+          context.appendChild(sources);
+          panel.appendChild(context);
+        }
         if (!Array.isArray(session.milestones) || !session.milestones.length) continue;
         const details = document.createElement("details");
         const summary = document.createElement("summary");
