@@ -143,7 +143,7 @@ function renderProviderButtons(external = {}) {
     button.style.marginRight = "8px";
     button.addEventListener("click", () => {
       const redirectTo = location.origin + location.pathname;
-      location.href = `${AUTH_URL}/auth/v1/authorize?provider=${encodeURIComponent(provider)}&redirect_to=${encodeURIComponent(redirectTo)}`;
+      location.href = providerSignInUrl(provider, redirectTo);
     });
     target.appendChild(button);
   }
@@ -153,6 +153,23 @@ function renderProviderButtons(external = {}) {
     note.textContent = "Email is the enabled sign-in method; OAuth providers appear here once enabled in Supabase.";
     target.appendChild(note);
   }
+}
+
+function providerSignInUrl(provider, redirectTo) {
+  const url = new URL(`${AUTH_URL}/auth/v1/authorize`);
+  url.searchParams.set("provider", provider);
+  url.searchParams.set("redirect_to", redirectTo);
+  // A shared browser can otherwise silently select its previous Google account.
+  if (provider === "google") url.searchParams.set("prompt", "select_account");
+  return url.toString();
+}
+
+function authEmailStatus(response, email) {
+  if (response.status === 429) {
+    return "Email sending is temporarily rate limited. No new link was sent. Try again later or use Google sign-in.";
+  }
+  if (!response.ok) return `Could not request sign-in email: HTTP ${response.status}.`;
+  return `Sign-in email requested for ${email}. Check your inbox and spam folder; delivery can take time. Open the link to finish signing in.`;
 }
 
 async function setupAuth() {
@@ -184,8 +201,7 @@ async function setupAuth() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email, create_user: true })
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setAuthStatus(`Sign-in link sent to ${email}. Open the link to finish signing in. If the email includes a 6-digit code, enter it below.`);
+      setAuthStatus(authEmailStatus(response, email));
     } catch (error) {
       setAuthStatus(`Could not send link: ${error.message || error}`);
     } finally {
