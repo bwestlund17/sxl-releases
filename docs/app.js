@@ -10,6 +10,8 @@ const state = {
   selected: "A1",
   pendingFileId: null,
   pendingUpload: null,
+  sourceFiles: [],
+  sourceUploadIds: new Map(),
   pendingSubmission: null,
   runPrices: null,
   // staged web-grid edits, keyed by sheet name: Map<address, {value?|formula?}>
@@ -46,6 +48,8 @@ function clearAccountDrafts() {
   state.runPrices = null;
   state.pendingSubmission = null;
   state.pendingUpload = null;
+  state.sourceFiles = [];
+  state.sourceUploadIds.clear();
   state.pendingFileId = null;
   state.workbook = null;
   state.pending = {};
@@ -59,6 +63,8 @@ function clearAccountDrafts() {
   } catch { /* private browsing may deny storage */ }
   $("prompt").value = "";
   $("file").value = "";
+  $("sourceFile").value = "";
+  $("sourceSelection").hidden = true;
   $("runPrice").hidden = true;
   $("editPrice").hidden = true;
 }
@@ -1517,27 +1523,43 @@ async function submitRun(promptText, overrides = {}) {
   const statusMessage = addMessage("sys", "Submitting…");
   try {
     await ensureToken();
-    let initFile = overrides.initFile || null;
-    const file = $("file").files && $("file").files[0];
-    if (file && !overrides.initFile) {
-      if (!state.pendingUpload || state.pendingUpload.file !== file) {
-        statusMessage.textContent = "Uploading attachment…";
-        const uploaded = await uploadFile(file);
-        state.pendingUpload = { file, fileId: uploaded.fileId };
+    let initFile = overrides.initFile || state.workbook?.fileId || null;
+    if (!initFile && state.workbook?.runId) {
+      statusMessage.textContent = "Preparing current workbook…";
+      const response = await authFetch("/api/spreadsheets/workbook/from-run", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runId: state.workbook.runId })
+      });
+      const promoted = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(promoted.error || `workbook preparation failed: HTTP ${response.status}`);
+      initFile = promoted.fileId;
+    }
+    const attachments = [];
+    if (!overrides.edits) {
+      for (const file of state.sourceFiles) {
+        let fileId = state.sourceUploadIds.get(file);
+        if (!fileId) {
+          statusMessage.textContent = `Uploading source ${file.name}…`;
+          fileId = (await uploadFile(file)).fileId;
+          state.sourceUploadIds.set(file, fileId);
+        }
+        attachments.push(fileId);
       }
-      initFile = state.pendingUpload.fileId;
-    } else if (!initFile && state.pendingFileId) {
-      initFile = state.pendingFileId;
     }
     const body = {
       prompt,
       mode: overrides.mode || ($("mode").value === "ask" ? "ask" : "action")
     };
     if (initFile) body.initFile = initFile;
-    if (!initFile && state.pendingSubmission && !overrides.edits) {
+    if (attachments.length) body.attachments = attachments;
+    if (state.pendingSubmission && !overrides.edits) {
       try {
         const prior = JSON.parse(state.pendingSubmission.bodyJson);
-        if (prior.prompt === body.prompt && prior.mode === body.mode && prior.initFile) body.initFile = prior.initFile;
+        if (prior.prompt === body.prompt && prior.mode === body.mode) {
+          if (!body.initFile && prior.initFile) body.initFile = prior.initFile;
+          if (!attachments.length && prior.initFile === body.initFile &&
+              Array.isArray(prior.attachments)) body.attachments = prior.attachments;
+        }
       } catch { /* a malformed saved request is replaced below */ }
     }
     if (overrides.edits) {
@@ -1580,7 +1602,10 @@ async function submitRun(promptText, overrides = {}) {
     try { sessionStorage.removeItem(PENDING_SUBMISSION_KEY); } catch { /* private browsing */ }
     state.pendingUpload = null;
     try { sessionStorage.removeItem(PENDING_UPLOAD_KEY); } catch { /* private browsing */ }
-    if (file && !overrides.initFile) $("file").value = "";
+    state.sourceFiles = [];
+    state.sourceUploadIds.clear();
+    $("sourceFile").value = "";
+    $("sourceSelection").hidden = true;
     if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
     state.runId = submitted.runId;
     loadCredits(); // reservation is atomic with queue insertion
@@ -1849,7 +1874,19 @@ window.addEventListener("DOMContentLoaded", async () => {
       submitRun();
     }
   });
-  $("attach").addEventListener("click", () => $("file").click());
+  $("attach").addEventListener("click", () => $("sourceFile").click());
+  $("sourceFile").addEventListener("change", () => {
+    const files = Array.from($("sourceFile").files || []);
+    if (files.length > 3 || files.some((file) => file.size > 5 * 1024 * 1024)) {
+      $("sourceFile").value = "";
+      setStatus("Choose up to three source files, each no larger than 5 MB.");
+      return;
+    }
+    state.sourceFiles = files;
+    state.sourceUploadIds.clear();
+    $("sourceSelection").hidden = files.length === 0;
+    $("sourceSelection").textContent = files.length ? `Sources for next run: ${files.map((file) => file.name).join(", ")}` : "";
+  });
   $("accountBtn").addEventListener("click", () => {
     $("accountPanel").hidden = !$("accountPanel").hidden;
   });

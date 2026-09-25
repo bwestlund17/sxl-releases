@@ -16,7 +16,8 @@
   <header id="topbar">
     <div class="topbar-left">
       <span class="brand-mark" title="sxl — audited Excel agent">SXL</span>
-      <input id="file" type="file" accept=".xlsx,.xlsm,.csv,.tsv,.txt,.pdf" hidden>
+      <input id="file" type="file" accept=".xlsx,.xlsm,.csv,.tsv" hidden>
+      <input id="sourceFile" type="file" accept=".txt,.md,.csv,.pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.gif" multiple hidden>
       <button id="openFile" class="tool">Open File</button>
       <div class="recent-wrap">
         <button id="recentFilesBtn" class="tool" aria-controls="recentFilesPanel" aria-expanded="false">Recent</button>
@@ -140,6 +141,7 @@
         <textarea id="prompt" rows="2" placeholder="Ask sxl anything..."></textarea>
         <button id="send" class="send-btn" title="Submit run">➤</button>
       </div>
+      <p id="sourceSelection" class="status" hidden></p>
       <div id="composerMeta">
         <select id="mode" title="run mode">
           <option value="action">Action</option>
