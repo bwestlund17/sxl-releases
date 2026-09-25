@@ -1094,6 +1094,7 @@ function addAuditReview(target, run) {
           const after = snapshotLabel(change.after, change.before, change.kind);
           item.textContent = `${change.sheetName}!${change.address}: ${before} → ${after}`;
           if (change.sourceLabel) item.textContent += ` · Source label: ${change.sourceLabel}`;
+          if (change.evidence?.note) item.textContent += ` · Evidence: ${String(change.evidence.note).slice(0, 220)}`;
           if (change.explanation) item.textContent += ` · ${change.explanation}`;
           if (Array.isArray(change.warnings) && change.warnings.length) {
             item.textContent += ` · Review: ${change.warnings.join("; ")}`;
