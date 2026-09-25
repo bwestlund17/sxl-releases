@@ -1131,6 +1131,15 @@ function addAuditReview(target, run) {
               fingerprint.textContent = `${source.name}: SHA-256 ${source.sha256}`
                 + `${Number.isInteger(source.sizeBytes) ? ` (${source.sizeBytes} bytes)` : ""}`;
               context.appendChild(fingerprint);
+              if (source.artifactName && (run.artifacts || []).includes(source.artifactName)) {
+                const download = document.createElement("button");
+                download.className = "mini-btn";
+                download.textContent = `Download verified source ${source.name}`;
+                download.addEventListener("click", () => downloadUrl(api(
+                  `/api/spreadsheets/${encodeURIComponent(run.runId)}/artifacts/${encodeURIComponent(source.artifactName)}`
+                )));
+                context.appendChild(download);
+              }
             }
           }
           panel.appendChild(context);
