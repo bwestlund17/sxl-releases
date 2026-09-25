@@ -170,6 +170,9 @@ a { color: #0d6b3f; }
 .audit-review { margin-top: 8px; padding: 8px; border: 1px solid #cbded2; border-radius: 6px; background: #fff; max-height: 320px; overflow: auto; font-size: 12px; }
 .audit-review ol { margin: 6px 0 0; padding-left: 22px; }
 .audit-review li { margin: 4px 0; }
+.run-activity { margin-top: 8px; font-size: 12px; }
+.run-activity ol { margin: 6px 0 0; padding-left: 22px; }
+.run-activity li { margin: 3px 0; }
 #chips { display: flex; flex-direction: column; gap: 6px; padding: 6px 0; }
 .chip-prompt {
   text-align: left; background: #ffffff; border: 1px solid #d0d7de;

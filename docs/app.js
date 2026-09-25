@@ -843,6 +843,49 @@ function addAuditReview(target, run) {
   panel.hidden = true;
 }
 
+function addRunActivity(target, run) {
+  const details = document.createElement("details");
+  details.className = "run-activity";
+  const label = document.createElement("summary");
+  label.textContent = "Recorded run states";
+  const panel = document.createElement("div");
+  details.appendChild(label);
+  details.appendChild(panel);
+  let loaded = false;
+  details.addEventListener("toggle", async () => {
+    if (!details.open || loaded) return;
+    panel.textContent = "Loading run states…";
+    try {
+      const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(run.runId)}/events`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const stream = await response.json();
+      if (stream.eventStreamVersion !== 1 || stream.runId !== run.runId || !Array.isArray(stream.events)) {
+        throw new Error("run event response does not match this run");
+      }
+      panel.textContent = "";
+      const list = document.createElement("ol");
+      for (const event of stream.events) {
+        const item = document.createElement("li");
+        const timestamp = new Date(event.at).toLocaleString();
+        const sets = Array.isArray(event.mutationSetIds) ? event.mutationSetIds.length : 0;
+        item.textContent = `${event.status} · ${timestamp}` +
+          (sets ? ` · ${sets} audited set${sets === 1 ? "" : "s"}` : "");
+        list.appendChild(item);
+      }
+      panel.appendChild(list);
+      if (stream.events.length === 100) {
+        const note = document.createElement("p");
+        note.textContent = "Showing the first 100 states; use the API cursor for more.";
+        panel.appendChild(note);
+      }
+      loaded = true;
+    } catch (error) {
+      panel.textContent = `Run states unavailable: ${error.message || error}`;
+    }
+  });
+  target.appendChild(details);
+}
+
 async function downloadUrl(url) {
   const response = await authFetch(url);
   if (!response.ok) {
@@ -1002,6 +1045,7 @@ async function renderRunResult(run, target) {
       addAuditReview(target, run);
     }
   }
+  addRunActivity(target, run);
 }
 
 async function submitRun(promptText, overrides = {}) {
