@@ -185,7 +185,7 @@ async function setupAuth() {
         body: JSON.stringify({ email, create_user: true })
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setAuthStatus(`Sign-in link sent to ${email}. Use the link, or enter the 6-digit code below.`);
+      setAuthStatus(`Sign-in link sent to ${email}. Open the link to finish signing in. If the email includes a 6-digit code, enter it below.`);
     } catch (error) {
       setAuthStatus(`Could not send link: ${error.message || error}`);
     } finally {
