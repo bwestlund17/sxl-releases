@@ -1024,14 +1024,14 @@ function addDownloadButtons(target, run) {
     button.addEventListener("click", () => downloadUrl(url));
     wrap.appendChild(button);
   };
-  if (run.downloadUrl) add(run.revertedAt && run.revertJob?.runId ? "Download original result" : "Download workbook", api(run.downloadUrl));
+  if (run.downloadUrl) add(run.revertedAt && run.revertJob?.runId ? "Download original result" : "Download workbook", run.downloadUrl);
   if (run.revertedAt && run.revertJob?.runId) {
-    add("Download reverted workbook", api(`/api/spreadsheets/${encodeURIComponent(run.revertJob.runId)}/download`));
+    add("Download reverted workbook", `/api/spreadsheets/${encodeURIComponent(run.revertJob.runId)}/download`);
   }
   for (const artifact of run.artifacts || []) {
     if (artifact === "workbook.xlsx" && run.downloadUrl) continue;
     add(artifact === "sxl-audit-receipt.json" ? "Download audit receipt" : `Download ${artifact}`,
-      api(`/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`));
+      `/api/spreadsheets/${run.runId}/artifacts/${encodeURIComponent(artifact)}`);
   }
   if (wrap.children.length) target.appendChild(wrap);
 }
@@ -1151,9 +1151,9 @@ function addAuditReview(target, run) {
                 const download = document.createElement("button");
                 download.className = "mini-btn";
                 download.textContent = `Download verified source ${source.name}`;
-                download.addEventListener("click", () => downloadUrl(api(
+                download.addEventListener("click", () => downloadUrl(
                   `/api/spreadsheets/${encodeURIComponent(run.runId)}/artifacts/${encodeURIComponent(source.artifactName)}`
-                )));
+                ));
                 context.appendChild(download);
               }
             }
