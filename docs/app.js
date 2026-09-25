@@ -1095,6 +1095,7 @@ function addAuditReview(target, run) {
           item.textContent = `${change.sheetName}!${change.address}: ${before} → ${after}`;
           if (change.sourceLabel) item.textContent += ` · Source label: ${change.sourceLabel}`;
           if (change.evidence?.note) item.textContent += ` · Evidence: ${String(change.evidence.note).slice(0, 220)}`;
+          if (change.evidence?.sha256) item.textContent += ` · SHA-256: ${String(change.evidence.sha256)}`;
           if (change.explanation) item.textContent += ` · ${change.explanation}`;
           if (Array.isArray(change.warnings) && change.warnings.length) {
             item.textContent += ` · Review: ${change.warnings.join("; ")}`;
@@ -1124,6 +1125,14 @@ function addAuditReview(target, run) {
           sources.textContent = `Inputs: ${Array.isArray(session.sources) && session.sources.length
             ? session.sources.map((source) => String(source)).join(", ") : "No source attachments recorded"}`;
           context.appendChild(sources);
+          if (Array.isArray(session.sourceFingerprints)) {
+            for (const source of session.sourceFingerprints) {
+              const fingerprint = document.createElement("p");
+              fingerprint.textContent = `${source.name}: SHA-256 ${source.sha256}`
+                + `${Number.isInteger(source.sizeBytes) ? ` (${source.sizeBytes} bytes)` : ""}`;
+              context.appendChild(fingerprint);
+            }
+          }
           panel.appendChild(context);
         }
         if (!Array.isArray(session.milestones) || !session.milestones.length) continue;
