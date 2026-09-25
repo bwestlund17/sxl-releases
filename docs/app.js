@@ -986,8 +986,17 @@ async function renderRunResult(run, target) {
     if (recorded.length > 0) {
       const note = document.createElement("p");
       note.textContent = `${recorded.length} audited mutation set${recorded.length === 1 ? "" : "s"} recorded before failure. ` +
-        (run.downloadUrl ? "Inspect the workbook and audit before retrying." : "Result workbook is unavailable; inspect the worker ledger before retrying.");
+        (run.downloadUrl ? "Download the recovery workbook before retrying." : "No recovery workbook was published.");
       target.appendChild(note);
+      const ids = document.createElement("details");
+      const label = document.createElement("summary");
+      label.textContent = "Show audit IDs";
+      const values = document.createElement("pre");
+      const sessions = run.result?.sessionIds || run.sessionIds || [];
+      values.textContent = `Session IDs: ${sessions.join(", ") || "none"}\nMutation set IDs: ${recorded.join(", ")}`;
+      ids.appendChild(label);
+      ids.appendChild(values);
+      target.appendChild(ids);
       addDownloadButtons(target, run);
       addAuditReview(target, run);
     }
