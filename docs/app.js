@@ -923,12 +923,33 @@ function addAuditReview(target, run) {
           if (Array.isArray(change.warnings) && change.warnings.length) {
             item.textContent += ` · Review: ${change.warnings.join("; ")}`;
           }
+          if (change.mutationRecordId) item.textContent += ` · Ledger record: ${change.mutationRecordId}`;
           list.appendChild(item);
           shown++;
         }
         if (shown >= 100) break;
       }
       panel.appendChild(list);
+      for (const session of receipt.sessions) {
+        if (!Array.isArray(session.milestones) || !session.milestones.length) continue;
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `Recorded milestones for session ${session.sessionId} (${session.milestones.length})`;
+        details.appendChild(summary);
+        const history = document.createElement("ol");
+        for (const milestone of session.milestones.slice(0, 100)) {
+          const item = document.createElement("li");
+          item.textContent = `${String(milestone.status || "").replaceAll("_", " ")} · ${String(milestone.timestamp || "").slice(0, 40)}`;
+          history.appendChild(item);
+        }
+        details.appendChild(history);
+        if (session.milestones.length > 100) {
+          const note = document.createElement("p");
+          note.textContent = `Showing 100 of ${session.milestones.length} milestones; download the receipt for the full record.`;
+          details.appendChild(note);
+        }
+        panel.appendChild(details);
+      }
       if (receipt.changeCount > shown) {
         const note = document.createElement("p");
         note.textContent = `Showing ${shown} of ${receipt.changeCount}; download the receipt for the full record.`;
