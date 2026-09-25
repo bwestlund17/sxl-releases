@@ -1196,12 +1196,16 @@ async function applyEdits() {
         if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
         fileId = body.fileId;
       } catch (error) {
-        setStatus(`Could not chain from the result: ${error.message || error}`);
+        const prior = committed.map(({ sheet, runId }) => `${sheet} (${runId.slice(0, 8)})`).join(", ");
+        setStatus(`${prior ? `Partial edit: ${prior} committed. ` : ""}Could not prepare the result for ${sheetName}: ${error.message || error}. ${prior ? "Review History before retrying." : ""}`.trim());
         return;
       }
     }
     if (!fileId) {
-      setStatus("Open a workbook first — an empty sheet has nothing to edit.");
+      const prior = committed.map(({ sheet, runId }) => `${sheet} (${runId.slice(0, 8)})`).join(", ");
+      setStatus(prior
+        ? `Partial edit: ${prior} committed. No result workbook is available for ${sheetName}. Review History before retrying.`
+        : "Open a workbook first — an empty sheet has nothing to edit.");
       return;
     }
     const edits = [...pending.entries()].map(([address, edit]) => ({
