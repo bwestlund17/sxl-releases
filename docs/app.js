@@ -866,12 +866,27 @@ function addRunActivity(target, run) {
         (nextAfter ? `?after=${nextAfter}` : ""));
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const stream = await response.json();
-      if (stream.eventStreamVersion !== 1 || stream.runId !== run.runId || !Array.isArray(stream.events)) {
+      if (stream.eventStreamVersion !== 1 || stream.runId !== run.runId || !Array.isArray(stream.events) ||
+          !Number.isInteger(stream.nextAfter) || stream.nextAfter < nextAfter) {
         throw new Error("run event response does not match this run");
       }
+      let pageCursor = nextAfter;
+      for (const event of stream.events) {
+        if (!event || event.eventVersion !== 1 || event.runId !== run.runId ||
+            (event.type !== "run_status" && event.type !== "run_progress") ||
+            !Number.isInteger(event.seq) || event.seq <= pageCursor ||
+            typeof event.status !== "string" || !event.status ||
+            typeof event.at !== "string" || !Number.isFinite(Date.parse(event.at)) ||
+            (event.type === "run_progress" &&
+              (event.status !== "running" || typeof event.message !== "string" ||
+               !/^[\x20-\x7e]{1,160}$/.test(event.message)))) {
+          throw new Error("run event response contains an invalid event");
+        }
+        pageCursor = event.seq;
+      }
+      if (pageCursor !== stream.nextAfter) throw new Error("run event response has an invalid cursor");
       if (nextAfter === 0) { panel.textContent = ""; panel.appendChild(list); }
       for (const event of stream.events) {
-        if (!Number.isInteger(event.seq) || event.seq <= nextAfter) throw new Error("run events are out of order");
         const item = document.createElement("li");
         const timestamp = new Date(event.at).toLocaleString();
         const sets = Array.isArray(event.mutationSetIds) ? event.mutationSetIds.length : 0;
