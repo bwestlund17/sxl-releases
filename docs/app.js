@@ -653,6 +653,111 @@ function effectiveCell(sheet, address) {
   return (sheet.cells || {})[address];
 }
 
+const FORMULA_REF_COLORS = ["#1f5fbf", "#b33c73", "#754bb3", "#ad5700", "#007b83", "#a43832"];
+const FORMULA_REF_PATTERN = /(?:(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_.]*))!)?(\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6})(?::(?:(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_.]*))!)?(\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}))?/y;
+
+// Display-only scanner. Formula execution and workbook writes keep their own
+// parsers; a colored token never changes the value submitted to the ledger.
+function formulaReferences(formula, activeSheet) {
+  if (typeof formula !== "string" || !formula.startsWith("=")) return [];
+  const colors = new Map();
+  const found = [];
+  for (let i = 1; i < formula.length;) {
+    if (formula[i] === '"') {
+      i++;
+      while (i < formula.length) {
+        if (formula[i++] === '"') {
+          if (formula[i] === '"') i++;
+          else break;
+        }
+      }
+      continue;
+    }
+    if (i > 1 && /[A-Za-z0-9_.$]/.test(formula[i - 1])) { i++; continue; }
+    FORMULA_REF_PATTERN.lastIndex = i;
+    const match = FORMULA_REF_PATTERN.exec(formula);
+    if (!match || /[A-Za-z0-9_.$!]/.test(formula[i + match[0].length] || "")) {
+      if (formula[i] === "'") {
+        i++;
+        while (i < formula.length && formula[i] !== "'") i++;
+      }
+      i++;
+      continue;
+    }
+    const sheet = (match[1] || match[2] || activeSheet || "").replace(/''/g, "'");
+    const toSheet = (match[4] || match[5] || sheet).replace(/''/g, "'");
+    const from = match[3].replace(/\$/g, "").toUpperCase();
+    const to = (match[6] || match[3]).replace(/\$/g, "").toUpperCase();
+    const key = `${sheet.toLowerCase()}!${from}:${toSheet.toLowerCase()}!${to}`;
+    if (!colors.has(key)) colors.set(key, FORMULA_REF_COLORS[colors.size % FORMULA_REF_COLORS.length]);
+    found.push({ start: i, end: i + match[0].length, color: colors.get(key), sheet, toSheet, from, to });
+    i += match[0].length;
+  }
+  return found;
+}
+
+function paintFormulaReferences(references, activeSheet) {
+  const cells = $("grid").querySelectorAll("td[data-addr]");
+  const byAddress = new Map();
+  for (const cell of cells) {
+    cell.classList.remove("formula-ref");
+    cell.style.removeProperty("--formula-ref-color");
+    byAddress.set(cell.dataset.addr, cell);
+  }
+  const visible = state.rendered || { rows: 40, cols: 12 };
+  for (const ref of references) {
+    if (ref.sheet.toLowerCase() !== activeSheet.toLowerCase() ||
+        ref.toSheet.toLowerCase() !== activeSheet.toLowerCase()) continue;
+    const from = addressParts(ref.from);
+    const to = addressParts(ref.to);
+    if (!from || !to) continue;
+    const firstRow = Math.max(1, Math.min(from.row, to.row));
+    const lastRow = Math.min(visible.rows, Math.max(from.row, to.row));
+    const firstCol = Math.max(1, Math.min(colToIndex(from.letters), colToIndex(to.letters)));
+    const lastCol = Math.min(visible.cols, Math.max(colToIndex(from.letters), colToIndex(to.letters)));
+    for (let row = firstRow; row <= lastRow; row++) {
+      for (let col = firstCol; col <= lastCol; col++) {
+        const cell = byAddress.get(`${columnToLetters(col)}${row}`);
+        if (!cell) continue;
+        cell.classList.add("formula-ref");
+        cell.style.setProperty("--formula-ref-color", ref.color);
+      }
+    }
+  }
+}
+
+function renderFormulaMirror(input, mirror, references) {
+  if (!input || !mirror) return;
+  const formula = input.value.startsWith("=");
+  input.classList.toggle("formula-colored", formula);
+  if (!formula) { mirror.replaceChildren(); return; }
+  const nodes = [];
+  let cursor = 0;
+  for (const ref of references) {
+    nodes.push(document.createTextNode(input.value.slice(cursor, ref.start)));
+    const mark = document.createElement("span");
+    mark.className = "formula-ref-token";
+    mark.style.setProperty("--formula-ref-color", ref.color);
+    mark.textContent = input.value.slice(ref.start, ref.end);
+    nodes.push(mark);
+    cursor = ref.end;
+  }
+  nodes.push(document.createTextNode(input.value.slice(cursor)));
+  mirror.replaceChildren(...nodes);
+  mirror.scrollLeft = input.scrollLeft;
+}
+
+function updateFormulaDecorations() {
+  const bar = $("formulaBar");
+  const editor = activeEditor?.input;
+  if (editor) bar.value = editor.value;
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  const references = formulaReferences(editor?.value ?? bar.value, sheet?.name || "");
+  renderFormulaMirror(bar, $("formulaBarColors"), references);
+  if (editor) renderFormulaMirror(editor, activeEditor.mirror, references);
+  paintFormulaReferences(references, sheet?.name || "");
+}
+
 // Excel-style keyboard navigation across the rendered viewport.
 function addressParts(address) {
   const match = /^([A-Z]+)(\d+)$/.exec(address || "");
@@ -702,6 +807,7 @@ function insertFormulaReference(address) {
   input.setSelectionRange(start + address.length, start + address.length);
   formulaPoint = { input, start, end: start + address.length, address };
   input.focus({ preventScroll: true });
+  updateFormulaDecorations();
   return true;
 }
 function captureFormulaPointer(event, address) {
@@ -742,10 +848,16 @@ function beginCellEdit(address, initial) {
   const existing = current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
   const text = initial !== undefined ? initial : existing;
   td.textContent = "";
+  const wrap = document.createElement("div");
+  wrap.className = "cell-edit-wrap";
+  const mirror = document.createElement("span");
+  mirror.className = "formula-highlight";
+  mirror.setAttribute("aria-hidden", "true");
   const input = document.createElement("input");
   input.className = "cell-editor";
   input.value = text;
-  td.appendChild(input);
+  wrap.append(mirror, input);
+  td.appendChild(wrap);
   input.focus();
   input.setSelectionRange(text.length, text.length);
   let cancelled = false;
@@ -786,12 +898,14 @@ function beginCellEdit(address, initial) {
       event.stopPropagation();
     }
   });
-  input.addEventListener("input", clearFormulaPoint);
+  input.addEventListener("input", () => { clearFormulaPoint(); updateFormulaDecorations(); });
   input.addEventListener("click", clearFormulaPoint);
+  input.addEventListener("scroll", () => { mirror.scrollLeft = input.scrollLeft; });
   // Blur commit still works for real focused windows; the tracked paths
   // above cover contexts where the browser never dispatches blur.
   input.addEventListener("blur", commit);
-  activeEditor = { input, commit };
+  activeEditor = { input, mirror, commit };
+  updateFormulaDecorations();
 }
 
 // Grid keyboard routing: navigation + type-to-edit when the grid has focus
@@ -941,6 +1055,7 @@ function selectCell(address, cell) {
   for (const td of $("grid").querySelectorAll("td.sel")) td.classList.remove("sel");
   const target = $("grid").querySelector(`td[data-addr="${address}"]`);
   if (target) target.classList.add("sel");
+  updateFormulaDecorations();
 }
 async function openWorkbookFile(file, requirePreview = false) {
   const previousFileId = state.pendingFileId;
@@ -2041,13 +2156,17 @@ window.addEventListener("DOMContentLoaded", async () => {
         const current = effectiveCell(sheet, state.selected);
         return current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
       })() : "";
+      updateFormulaDecorations();
       $("formulaBar").blur();
     } else if (event.key.startsWith("Arrow")) {
       pointFormulaWithArrow(event, state.selected);
     }
   });
-  $("formulaBar").addEventListener("input", clearFormulaPoint);
+  $("formulaBar").addEventListener("input", () => { clearFormulaPoint(); updateFormulaDecorations(); });
   $("formulaBar").addEventListener("click", clearFormulaPoint);
+  $("formulaBar").addEventListener("scroll", () => {
+    $("formulaBarColors").scrollLeft = $("formulaBar").scrollLeft;
+  });
   for (const chip of document.querySelectorAll(".chip-prompt")) {
     chip.addEventListener("click", () => submitRun(chip.dataset.prompt));
   }

@@ -64,7 +64,10 @@
   <div id="formulaRow">
     <span id="nameBox">A1</span>
     <span class="fx">fx</span>
-    <input id="formulaBar" placeholder="Type a value or =FORMULA, then Enter" title="Edit the selected cell; Enter stages the edit, Esc cancels">
+    <span class="formula-edit-wrap">
+      <span id="formulaBarColors" class="formula-highlight" aria-hidden="true"></span>
+      <input id="formulaBar" placeholder="Type a value or =FORMULA, then Enter" title="Edit the selected cell; Enter stages the edit, Esc cancels">
+    </span>
     <span id="formatButtons" title="Stage a number format on the selected cell">
       <button class="fmt-btn" data-format="0.00%" title="Percent — 0.00%">%</button>
       <button class="fmt-btn" data-format="#,##0" title="Thousands — #,##0">,</button>

@@ -76,10 +76,24 @@ a { color: #0d6b3f; }
   background: #f6f7f8; font-weight: 600;
 }
 .fx { color: #57606a; font-style: italic; font-weight: 600; }
+.formula-edit-wrap { position: relative; flex: 1; min-width: 0; display: block; }
 #formulaBar {
-  flex: 1; border: 1px solid #d0d7de; border-radius: 4px; padding: 5px 8px;
-  font-family: Consolas, monospace; font-size: 12.5px; background: #ffffff;
+  width: 100%; box-sizing: border-box; border: 1px solid #d0d7de;
+  border-radius: 4px; padding: 5px 8px; font-family: Consolas, monospace;
+  font-size: 12.5px; background: #ffffff;
 }
+.formula-highlight {
+  display: none; position: absolute; inset: 1px; overflow: hidden;
+  white-space: pre; pointer-events: none; font: inherit; color: #24292f;
+}
+#formulaBarColors {
+  padding: 5px 8px; font-family: Consolas, monospace; font-size: 12.5px;
+}
+.formula-highlight .formula-ref-token { color: var(--formula-ref-color); font-weight: 700; }
+.formula-edit-wrap:has(.formula-colored) .formula-highlight,
+.cell-edit-wrap:has(.formula-colored) .formula-highlight { display: block; }
+input.formula-colored { position: relative; color: transparent !important; caret-color: #24292f; background: transparent !important; }
+input.formula-colored::selection { color: transparent; background: #cbe6d5; }
 #formatButtons { display: inline-flex; align-items: center; gap: 3px; }
 .fmt-btn {
   border: 1px solid #d0d7de; border-radius: 4px; background: #ffffff;
@@ -117,11 +131,17 @@ a { color: #0d6b3f; }
 #grid td.sel {
   outline: 2px solid #0d6b3f; outline-offset: -2px; background: #f2f9f5;
 }
+#grid td.formula-ref {
+  box-shadow: inset 0 0 0 2px var(--formula-ref-color);
+  background: color-mix(in srgb, var(--formula-ref-color) 11%, white);
+}
 #grid td.fonly { color: #7a1f1f; font-family: Consolas, monospace; }
 #grid td.pending { background: #fdf6e3; font-weight: 600; }
 #grid td.pending::after {
   content: "•"; color: #b7791f; margin-left: 3px; font-weight: 700;
 }
+#grid td .cell-edit-wrap { position: relative; width: 100%; height: 100%; }
+#grid td .cell-edit-wrap .formula-highlight { padding: 0; }
 #grid td input.cell-editor {
   width: 100%; height: 100%; border: none; outline: none; padding: 0;
   font: inherit; background: #ffffff;
