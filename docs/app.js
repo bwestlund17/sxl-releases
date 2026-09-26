@@ -8,6 +8,9 @@ const state = {
   // grid: { fileName, fileId?, runId?, sheets: [{name, cells, rows, cols}], active }
   workbook: null,
   selected: "A1",
+  selectionAnchor: null,
+  undoDraft: [],
+  redoDraft: [],
   pendingFileId: null,
   pendingUpload: null,
   sourceFiles: [],
@@ -53,6 +56,9 @@ function clearAccountDrafts() {
   state.pendingFileId = null;
   state.workbook = null;
   state.pending = {};
+  state.selectionAnchor = null;
+  state.undoDraft = [];
+  state.redoDraft = [];
   $("recentFilesPanel").hidden = true;
   $("recentFilesBtn").setAttribute("aria-expanded", "false");
   $("recentFilesList").replaceChildren();
@@ -411,6 +417,9 @@ function setWorkbook(workbook, remember = true) {
   state.workbook = workbook;
   state.selected = "A1";
   state.pending = {};
+  state.selectionAnchor = null;
+  state.undoDraft = [];
+  state.redoDraft = [];
   updatePendingBar();
   $("workbookTitle").textContent = workbook.fileName || "untitled";
   renderSheetTabs();
@@ -462,8 +471,36 @@ function activePending() {
   return state.pending[name];
 }
 
+function pendingSnapshot() {
+  return Object.fromEntries(Object.entries(state.pending).map(([sheet, edits]) =>
+    [sheet, [...edits].map(([address, edit]) => [address, { ...edit }])]
+  ));
+}
+
+function rememberDraftEdit() {
+  state.undoDraft.push(pendingSnapshot());
+  if (state.undoDraft.length > 50) state.undoDraft.shift();
+  state.redoDraft = [];
+}
+
+function restoreDraftEdit(from, to, label) {
+  if (!from.length) {
+    setStatus(`No staged edit to ${label.toLowerCase()}. Applied runs use their audited Undo action.`);
+    return;
+  }
+  to.push(pendingSnapshot());
+  const snapshot = from.pop();
+  state.pending = Object.fromEntries(Object.entries(snapshot).map(([sheet, edits]) =>
+    [sheet, new Map(edits)]
+  ));
+  updatePendingBar();
+  renderGrid();
+  setStatus(`${label} staged edit.`);
+}
+
 function stageEdit(address, edit) {
   const pending = activePending();
+  rememberDraftEdit();
   pending.set(address, edit);
   updatePendingBar();
   renderGrid();
@@ -472,6 +509,7 @@ function stageEdit(address, edit) {
 function discardEdits() {
   const wb = state.workbook;
   if (!wb) return;
+  rememberDraftEdit();
   delete state.pending[wb.sheets[wb.active].name];
   updatePendingBar();
   renderGrid();
@@ -505,6 +543,7 @@ function renderSheetTabs() {
     tab.addEventListener("click", () => {
       wb.active = index;
       state.selected = "A1";
+      state.selectionAnchor = null;
       renderSheetTabs();
       renderGrid();
     });
@@ -514,6 +553,8 @@ function renderSheetTabs() {
 
 const GRID_MAX_ROWS = 200;
 const GRID_MAX_COLS = 40;
+const GRID_COLUMN_WIDTH = 104;
+const GRID_ROWHEAD_WIDTH = 42;
 
 function renderGrid() {
   commitActiveEditor();
@@ -527,6 +568,17 @@ function renderGrid() {
   const rows = Math.max(40, Math.min(sheet.rows || 1, GRID_MAX_ROWS));
   const cols = Math.max(12, Math.min(sheet.cols || 1, GRID_MAX_COLS));
   state.rendered = { rows, cols };
+  // A table with auto width lets the editor input's intrinsic width enlarge
+  // one column as soon as typing begins. Fix the width of every rendered
+  // column before adding any cells or editor controls.
+  table.style.width = `${GRID_ROWHEAD_WIDTH + cols * GRID_COLUMN_WIDTH}px`;
+  const colgroup = document.createElement("colgroup");
+  for (let c = 0; c <= cols; c++) {
+    const col = document.createElement("col");
+    col.style.width = `${c === 0 ? GRID_ROWHEAD_WIDTH : GRID_COLUMN_WIDTH}px`;
+    colgroup.appendChild(col);
+  }
+  table.appendChild(colgroup);
 
   // Formula preview resolver: staged edits override stored cells; memoized,
   // cycle-guarded, whitelist of typical Excel functions (see engine below).
@@ -628,7 +680,7 @@ function renderGrid() {
         // Excel-like: clicking a cell moves keyboard focus to the grid so
         // arrows/type-to-edit work immediately.
         $("gridScroll").focus({ preventScroll: true });
-        selectCell(address, effectiveCell(sheet, address));
+        selectCell(address, effectiveCell(sheet, address), event.shiftKey);
       });
       td.addEventListener("dblclick", () => { if (!formulaInput()) beginCellEdit(address); });
       tr.appendChild(td);
@@ -638,7 +690,7 @@ function renderGrid() {
   const shown = Object.keys(sheet.cells || {}).length;
   $("gridStatus").textContent = `${sheet.name}: ${shown} cell${shown === 1 ? "" : "s"} loaded`
     + (wb.truncated ? " (preview limited; some cells or sheets are hidden)" : "");
-  selectCell(state.selected, effectiveCell(sheet, state.selected));
+  selectCell(state.selected, effectiveCell(sheet, state.selected), Boolean(state.selectionAnchor));
 }
 
 // Pending edits override the stored cell for display and the formula bar.
@@ -647,8 +699,8 @@ function effectiveCell(sheet, address) {
   const staged = pending && pending.get(address);
   if (staged) {
     return staged.formula
-      ? { f: staged.formula, italic: staged.italic, wrap: staged.wrap, align: staged.align }
-      : { v: staged.value, italic: staged.italic, wrap: staged.wrap, align: staged.align };
+      ? { ...staged, f: staged.formula }
+      : { ...staged, v: staged.value };
   }
   return (sheet.cells || {})[address];
 }
@@ -766,18 +818,129 @@ function addressParts(address) {
 function colToIndex(letters) {
   return letters.split("").reduce((sum, ch) => sum * 26 + (ch.charCodeAt(0) - 64), 0);
 }
-function moveSelection(dr, dc) {
+function selectionRect() {
+  const from = addressParts(state.selectionAnchor || state.selected);
+  const to = addressParts(state.selected);
+  if (!from || !to) return null;
+  return {
+    top: Math.min(from.row, to.row), bottom: Math.max(from.row, to.row),
+    left: Math.min(colToIndex(from.letters), colToIndex(to.letters)),
+    right: Math.max(colToIndex(from.letters), colToIndex(to.letters))
+  };
+}
+function selectAddress(address, extend = false, scroll = true) {
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  if (!sheet) return;
+  selectCell(address, effectiveCell(sheet, address), extend);
+  if (scroll) $("grid").querySelector(`td[data-addr="${address}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+function moveSelection(dr, dc, extend = false) {
   commitActiveEditor();
   const current = addressParts(state.selected);
   const rendered = state.rendered || { rows: 40, cols: 12 };
   if (!current) return;
   const col = Math.min(rendered.cols, Math.max(1, colToIndex(current.letters) + dc));
   const row = Math.min(rendered.rows, Math.max(1, current.row + dr));
-  const address = `${columnToLetters(col)}${row}`;
-  const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
-  selectCell(address, sheet ? effectiveCell(sheet, address) : null);
-  const td = $("grid").querySelector(`td[data-addr="${address}"]`);
-  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+  selectAddress(`${columnToLetters(col)}${row}`, extend);
+}
+function jumpSelection(dr, dc, extend = false) {
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  const current = addressParts(state.selected);
+  const rendered = state.rendered || { rows: 40, cols: 12 };
+  if (!sheet || !current) return;
+  let row = current.row;
+  let col = colToIndex(current.letters);
+  const inside = (r, c) => r >= 1 && c >= 1 && r <= rendered.rows && c <= rendered.cols;
+  const filled = (r, c) => {
+    const cell = effectiveCell(sheet, `${columnToLetters(c)}${r}`);
+    return Boolean(cell?.f || (cell?.v !== undefined && cell?.v !== null && String(cell.v) !== ""));
+  };
+  const nextRow = row + dr;
+  const nextCol = col + dc;
+  if (!inside(nextRow, nextCol)) return;
+  const contiguous = filled(row, col) && filled(nextRow, nextCol);
+  while (inside(row + dr, col + dc)) {
+    row += dr;
+    col += dc;
+    if (filled(row, col) !== contiguous && (contiguous || filled(row, col))) {
+      if (contiguous) { row -= dr; col -= dc; }
+      break;
+    }
+  }
+  selectAddress(`${columnToLetters(col)}${row}`, extend);
+}
+function lastUsedAddress() {
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  const rendered = state.rendered || { rows: 40, cols: 12 };
+  if (!sheet) return "A1";
+  let row = 1;
+  let col = 1;
+  for (const address of [...Object.keys(sheet.cells || {}), ...activePending().keys()]) {
+    const parts = addressParts(address);
+    if (!parts) continue;
+    row = Math.max(row, Math.min(rendered.rows, parts.row));
+    col = Math.max(col, Math.min(rendered.cols, colToIndex(parts.letters)));
+  }
+  return `${columnToLetters(col)}${row}`;
+}
+
+function selectedTsv() {
+  const rect = selectionRect();
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  if (!rect || !sheet) return "";
+  const lines = [];
+  for (let row = rect.top; row <= rect.bottom; row++) {
+    const fields = [];
+    for (let col = rect.left; col <= rect.right; col++) {
+      const cell = effectiveCell(sheet, `${columnToLetters(col)}${row}`);
+      const value = String(cell?.f ?? cell?.v ?? "");
+      fields.push(/[\t\r\n"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
+    }
+    lines.push(fields.join("\t"));
+  }
+  return lines.join("\r\n");
+}
+
+function clearSelectedCells() {
+  const rect = selectionRect();
+  if (!rect) return;
+  const count = (rect.bottom - rect.top + 1) * (rect.right - rect.left + 1);
+  if (count > 50) {
+    setStatus("This selection exceeds the 50-edit limit. Clear a smaller range.");
+    return false;
+  }
+  rememberDraftEdit();
+  const pending = activePending();
+  for (let row = rect.top; row <= rect.bottom; row++) {
+    for (let col = rect.left; col <= rect.right; col++) {
+      pending.set(`${columnToLetters(col)}${row}`, { value: "" });
+    }
+  }
+  updatePendingBar();
+  renderGrid();
+  return true;
+}
+
+function onGridCopy(event) {
+  const tag = (event.target?.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return false;
+  const text = selectedTsv();
+  if (!text || text.length > 100000 || !event.clipboardData) return false;
+  event.clipboardData.setData("text/plain", text);
+  event.preventDefault();
+  return true;
+}
+
+function onGridCut(event) {
+  const tag = (event.target?.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  const rect = selectionRect();
+  if (!rect || (rect.bottom - rect.top + 1) * (rect.right - rect.left + 1) > 50) {
+    setStatus("Cut is limited to 50 selected cells.");
+    event.preventDefault();
+    return;
+  }
+  if (onGridCopy(event)) clearSelectedCells();
 }
 
 // Cell editing. Three entries: double-click / F2 edit the existing content,
@@ -834,6 +997,27 @@ function pointFormulaWithArrow(event, origin) {
   $("grid").querySelector(`td[data-addr="${address}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   return true;
 }
+function toggleAbsoluteReference(input) {
+  if (!input.value.startsWith("=")) return false;
+  const caret = input.selectionStart ?? input.value.length;
+  const sheet = state.workbook?.sheets[state.workbook.active]?.name || "";
+  const references = formulaReferences(input.value, sheet);
+  const token = references.find((ref) => caret >= ref.start && caret <= ref.end);
+  if (!token) return false;
+  const cells = [...input.value.slice(token.start, token.end).matchAll(/\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}/g)]
+    .map((match) => ({ text: match[0], start: token.start + match.index, end: token.start + match.index + match[0].length }));
+  const cell = cells.find((part) => caret >= part.start && caret <= part.end) || cells.at(-1);
+  if (!cell) return false;
+  const [, fixedCol, letters, fixedRow, row] = /^(\$?)([A-Za-z]{1,3})(\$?)(\d+)$/.exec(cell.text);
+  const next = !fixedCol && !fixedRow ? `$${letters}$${row}`
+    : fixedCol && fixedRow ? `${letters}$${row}`
+      : !fixedCol && fixedRow ? `$${letters}${row}` : `${letters}${row}`;
+  input.value = input.value.slice(0, cell.start) + next + input.value.slice(cell.end);
+  input.setSelectionRange(cell.start + next.length, cell.start + next.length);
+  clearFormulaPoint();
+  updateFormulaDecorations();
+  return true;
+}
 function commitActiveEditor() {
   const editor = activeEditor;
   if (editor) editor.commit();
@@ -877,7 +1061,10 @@ function beginCellEdit(address, initial) {
     selectCell(address, effectiveCell(sheet, address));
   };
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
+    if (event.key === "F4" && toggleAbsoluteReference(input)) {
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
       commit();
@@ -913,19 +1100,71 @@ function beginCellEdit(address, initial) {
 function onGridKey(event) {
   const tag = (event.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select") return;
-  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.metaKey || event.altKey) return;
+  const current = addressParts(state.selected);
+  const rendered = state.rendered || { rows: 40, cols: 12 };
+  if (event.ctrlKey) {
+    const steps = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    if (steps[event.key]) {
+      event.preventDefault();
+      return jumpSelection(...steps[event.key], event.shiftKey);
+    }
+    const key = event.key.toLowerCase();
+    if (key === "c" || key === "x" || key === "v") return; // clipboard events below
+    if (key === "z" || key === "y") {
+      event.preventDefault();
+      return key === "y" || event.shiftKey
+        ? restoreDraftEdit(state.redoDraft, state.undoDraft, "Redid")
+        : restoreDraftEdit(state.undoDraft, state.redoDraft, "Undid");
+    }
+    if (key === "a") {
+      event.preventDefault();
+      state.selectionAnchor = "A1";
+      return selectAddress(`${columnToLetters(rendered.cols)}${rendered.rows}`, true, false);
+    }
+    if (key === " " && current) {
+      event.preventDefault();
+      state.selectionAnchor = `${current.letters}1`;
+      return selectAddress(`${current.letters}${rendered.rows}`, true, false);
+    }
+    if (key === "b" || key === "i") {
+      event.preventDefault();
+      document.querySelector(`#styleButtons [data-${key === "b" ? "bold" : "italic"}]`)?.click();
+      return;
+    }
+    if (key === "/" || key === "?") {
+      event.preventDefault();
+      return $("shortcutDialog").showModal();
+    }
+    if (event.key === "Home") { event.preventDefault(); return selectAddress("A1", event.shiftKey); }
+    if (event.key === "End") { event.preventDefault(); return selectAddress(lastUsedAddress(), event.shiftKey); }
+    return; // keep browser shortcuts outside the grid's supported set
+  }
+  if (event.shiftKey && event.key === " " && current) {
+    event.preventDefault();
+    state.selectionAnchor = `A${current.row}`;
+    return selectAddress(`${columnToLetters(rendered.cols)}${current.row}`, true, false);
+  }
   switch (event.key) {
-    case "ArrowUp": event.preventDefault(); return moveSelection(-1, 0);
-    case "ArrowDown": event.preventDefault(); return moveSelection(1, 0);
-    case "ArrowLeft": event.preventDefault(); return moveSelection(0, -1);
-    case "ArrowRight": event.preventDefault(); return moveSelection(0, 1);
-    case "Enter": event.preventDefault(); return moveSelection(1, 0);
+    case "ArrowUp": event.preventDefault(); return moveSelection(-1, 0, event.shiftKey);
+    case "ArrowDown": event.preventDefault(); return moveSelection(1, 0, event.shiftKey);
+    case "ArrowLeft": event.preventDefault(); return moveSelection(0, -1, event.shiftKey);
+    case "ArrowRight": event.preventDefault(); return moveSelection(0, 1, event.shiftKey);
+    case "Home": event.preventDefault(); return selectAddress(`A${current?.row || 1}`, event.shiftKey);
+    case "PageUp":
+    case "PageDown": {
+      event.preventDefault();
+      const page = Math.max(1, Math.floor($("gridScroll").clientHeight / 22) - 1);
+      return moveSelection(event.key === "PageUp" ? -page : page, 0, event.shiftKey);
+    }
+    case "Enter": event.preventDefault(); return moveSelection(event.shiftKey ? -1 : 1, 0);
     case "Tab": event.preventDefault(); return moveSelection(0, event.shiftKey ? -1 : 1);
+    case "Escape": event.preventDefault(); return selectAddress(state.selected);
     case "F2": event.preventDefault(); return beginCellEdit(state.selected);
     case "Delete":
     case "Backspace":
       event.preventDefault();
-      return stageEdit(state.selected, { value: "" });
+      return clearSelectedCells();
     default:
       if (event.key.length === 1) {
         event.preventDefault();
@@ -989,7 +1228,7 @@ function stageGridPaste(text) {
   const wb = state.workbook;
   if (!wb) return false;
   const sheet = wb.sheets[wb.active];
-  const start = addressParts(state.selected);
+  const start = addressParts(state.selectionAnchor || state.selected);
   if (!sheet || !start) return false;
   try {
     const rows = parseGridPaste(text);
@@ -1013,7 +1252,9 @@ function stageGridPaste(text) {
     if (new Set([...pending.keys(), ...edits.map(([address]) => address)]).size > 50) {
       throw new Error("Paste would exceed 50 staged edits on this sheet. Apply or discard the current edits first.");
     }
+    rememberDraftEdit();
     for (const [address, edit] of edits) pending.set(address, edit);
+    state.selectionAnchor = null;
     sheet.rows = Math.max(sheet.rows || 1, lastRow);
     sheet.cols = Math.max(sheet.cols || 1, lastColumn);
     updatePendingBar();
@@ -1048,11 +1289,26 @@ function formulaBarCommit() {
   stageEdit(state.selected, text.startsWith("=") ? { formula: text } : { value: text });
 }
 
-function selectCell(address, cell) {
+function selectCell(address, cell, extend = false) {
+  if (extend) state.selectionAnchor ||= state.selected;
+  else state.selectionAnchor = null;
   state.selected = address;
   $("nameBox").textContent = address;
   $("formulaBar").value = cell ? (cell.f || (cell.v !== undefined && cell.v !== null ? String(cell.v) : "")) : "";
   for (const td of $("grid").querySelectorAll("td.sel")) td.classList.remove("sel");
+  for (const td of $("grid").querySelectorAll("td.range-selected")) td.classList.remove("range-selected");
+  if (state.selectionAnchor) {
+    const rect = selectionRect();
+    if (rect) {
+      for (const td of $("grid").querySelectorAll("td[data-addr]")) {
+        const parts = addressParts(td.dataset.addr);
+        const col = colToIndex(parts.letters);
+        if (parts.row >= rect.top && parts.row <= rect.bottom && col >= rect.left && col <= rect.right) {
+          td.classList.add("range-selected");
+        }
+      }
+    }
+  }
   const target = $("grid").querySelector(`td[data-addr="${address}"]`);
   if (target) target.classList.add("sel");
   updateFormulaDecorations();
@@ -2086,7 +2342,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     else setStatus("Nothing to refresh yet.");
   });
   $("gridScroll").addEventListener("keydown", onGridKey);
+  $("gridScroll").addEventListener("copy", onGridCopy);
+  $("gridScroll").addEventListener("cut", onGridCut);
   $("gridScroll").addEventListener("paste", onGridPaste);
+  $("shortcutHelp").addEventListener("click", () => $("shortcutDialog").showModal());
+  $("shortcutClose").addEventListener("click", () => $("shortcutDialog").close());
   // Number-format presets: stage {value|formula, format} on the selected cell.
   for (const button of document.querySelectorAll(".fmt-btn")) {
     button.addEventListener("click", () => {
@@ -2145,7 +2405,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   }
   $("formulaBar").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
+    if (event.key === "F4" && toggleAbsoluteReference($("formulaBar"))) {
+      event.preventDefault();
+    } else if (event.key === "Enter") {
       event.preventDefault();
       formulaBarCommit();
       $("formulaBar").blur();

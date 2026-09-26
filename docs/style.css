@@ -116,21 +116,23 @@ input.formula-colored::selection { color: transparent; background: #cbe6d5; }
 #grid th, #grid td {
   border: 1px solid #e2e5e9; padding: 0 5px; height: 22px;
   font-size: 12.5px; white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; background: #ffffff;
+  text-overflow: ellipsis; background: #ffffff; box-sizing: border-box;
 }
+#grid td { width: 104px; min-width: 104px; max-width: 104px; }
 #grid th {
   background: #f0f2f4; color: #3b434b; font-weight: 600; text-align: center;
-  position: sticky; top: 0; z-index: 2; min-width: 88px; max-width: 88px;
+  position: sticky; top: 0; z-index: 2; width: 104px; min-width: 104px; max-width: 104px;
 }
 #grid th.rowhead {
   position: sticky; left: 0; z-index: 1;
-  min-width: 42px; max-width: 42px;
+  width: 42px; min-width: 42px; max-width: 42px;
 }
 #grid th.corner { z-index: 3; }
 #grid td.num { text-align: right; }
 #grid td.sel {
   outline: 2px solid #0d6b3f; outline-offset: -2px; background: #f2f9f5;
 }
+#grid td.range-selected { background: #e7f3eb; }
 #grid td.formula-ref {
   box-shadow: inset 0 0 0 2px var(--formula-ref-color);
   background: color-mix(in srgb, var(--formula-ref-color) 11%, white);
@@ -140,10 +142,11 @@ input.formula-colored::selection { color: transparent; background: #cbe6d5; }
 #grid td.pending::after {
   content: "•"; color: #b7791f; margin-left: 3px; font-weight: 700;
 }
-#grid td .cell-edit-wrap { position: relative; width: 100%; height: 100%; }
+#grid td .cell-edit-wrap { position: relative; width: 100%; height: 100%; min-width: 0; overflow: hidden; }
 #grid td .cell-edit-wrap .formula-highlight { padding: 0; }
 #grid td input.cell-editor {
-  width: 100%; height: 100%; border: none; outline: none; padding: 0;
+  display: block; width: 100%; min-width: 0; box-sizing: border-box;
+  height: 100%; border: none; outline: none; padding: 0;
   font: inherit; background: #ffffff;
 }
 .mini-btn {
@@ -151,6 +154,13 @@ input.formula-colored::selection { color: transparent; background: #cbe6d5; }
   padding: 1px 8px; font-size: 12px;
 }
 .mini-btn.primary { background: #0d6b3f; border-color: #0d6b3f; color: #ffffff; }
+#shortcutDialog { max-width: min(620px, 90vw); border: 1px solid #cbded2; border-radius: 8px; padding: 18px 22px; box-shadow: 0 18px 55px #0003; }
+#shortcutDialog::backdrop { background: #0006; }
+#shortcutDialog h2 { margin: 0 0 8px; font-size: 18px; }
+#shortcutDialog p { margin: 8px 0; font-size: 13px; color: #4c5964; }
+#shortcutDialog dl { display: grid; grid-template-columns: minmax(185px, 1fr) 1fr; gap: 5px 14px; font-size: 12.5px; }
+#shortcutDialog dt { font-weight: 700; }
+#shortcutDialog dd { margin: 0; }
 #cancelRun[hidden] { display: none; }
 #pendingWrap { display: inline-flex; align-items: center; gap: 6px; color: #b7791f; font-weight: 600; }
 #pendingWrap[hidden] { display: none; }

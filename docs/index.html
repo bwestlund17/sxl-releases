@@ -99,7 +99,7 @@
 
   <main id="workspace">
     <section id="gridPane">
-      <div id="gridScroll" tabindex="0" aria-label="workbook grid (arrow keys navigate; type to edit; F2 edits; Delete clears; paste an Excel cell block to stage edits)">
+      <div id="gridScroll" tabindex="0" aria-label="workbook grid (Excel keyboard shortcuts; use Shortcuts for help)">
         <table id="grid"></table>
       </div>
       <div id="statusbar">
@@ -116,6 +116,7 @@
           <button id="discardEdits" class="mini-btn" title="Discard staged edits on this sheet">Discard</button>
         </span>
         <span class="spacer"></span>
+        <button id="shortcutHelp" class="mini-btn" title="Show grid keyboard shortcuts">Shortcuts</button>
         <span id="zoomLabel">100%</span>
       </div>
       <div id="editLaneNote" role="note" hidden>Office-free accepts plain values in simple .xlsx files only. Formulas, formatting, and advanced workbooks are rejected before save; formulas are not recalculated.</div>
@@ -162,5 +163,23 @@
       <pre id="output" hidden></pre>
     </aside>
   </main>
+  <dialog id="shortcutDialog" aria-labelledby="shortcutTitle">
+    <h2 id="shortcutTitle">Web grid shortcuts</h2>
+    <p>Focus the grid first. Editing a cell or formula bar keeps normal text shortcuts.</p>
+    <dl>
+      <dt>Arrows, Enter, Shift+Enter, Tab, Shift+Tab</dt><dd>Move the active cell</dd>
+      <dt>Shift+Arrows, Shift+click</dt><dd>Select a range</dd>
+      <dt>Ctrl+Arrows, Ctrl+Home, Ctrl+End</dt><dd>Jump across data or to an edge</dd>
+      <dt>Home, Page Up, Page Down</dt><dd>Move within the visible grid</dd>
+      <dt>Ctrl+A, Ctrl+Space, Shift+Space</dt><dd>Select the grid, column, or row</dd>
+      <dt>F2, Delete, Backspace</dt><dd>Edit or clear selected cells</dd>
+      <dt>F4 while editing a reference</dt><dd>Cycle relative and absolute references</dd>
+      <dt>Ctrl+C, Ctrl+X, Ctrl+V</dt><dd>Copy, cut, or paste cell text and ranges</dd>
+      <dt>Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z</dt><dd>Undo or redo staged edits</dd>
+      <dt>Ctrl+B, Ctrl+I</dt><dd>Stage bold or italic on a cell with content</dd>
+    </dl>
+    <p>Apply saves staged edits through the audit ledger. Use a completed run’s Undo action for applied changes. The web grid currently limits a single edit or paste to 50 cells; structural Excel shortcuts are not available.</p>
+    <button id="shortcutClose" class="mini-btn">Close</button>
+  </dialog>
 </body>
 </html>
