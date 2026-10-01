@@ -1116,7 +1116,7 @@ function stageProfileCycle(macro) {
   const count = (rect.bottom - rect.top + 1) * (rect.right - rect.left + 1);
   if (count > 50) return setStatus("Select at most 50 cells for imported formatting.");
   if (Object.values(state.pending).some((map) => [...map.values()].some((edit) => !edit.styleOnly))) return setStatus("Apply or discard value edits before staging imported formatting.");
-  const selected = effectiveCell(sheet, state.selected) || {};
+  const selected = { ...sheet.defaultStyle, ...(effectiveCell(sheet, state.selected) || {}) };
   const entry = nextProfileCycle(macro, `${state.workbook.fileId || state.workbook.runId}:${sheet.name}:${JSON.stringify(rect)}`, { ...selected, format: selected.format || selected.nf });
   rememberDraftEdit();
   const pending = state.pending[sheet.name] || (state.pending[sheet.name] = new Map());
