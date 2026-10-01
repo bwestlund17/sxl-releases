@@ -1,6 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const nextProfileCycle = window.SXLProfileRuntime?.createCycle(window.SXLWorkbookProfile);
 const state = {
   token: null,
   runId: null,
@@ -507,6 +508,7 @@ function stageEdit(address, edit) {
 }
 
 function discardEdits() {
+  if (typeof nextProfileCycle !== "undefined" && nextProfileCycle) nextProfileCycle.reset();
   const wb = state.workbook;
   if (!wb) return;
   rememberDraftEdit();
@@ -631,7 +633,7 @@ function renderGrid() {
       const td = document.createElement("td");
       td.dataset.addr = address;
       const pendingEdit = pending && pending.get(address);
-      const cell = pendingEdit
+      const cell = pendingEdit?.styleOnly ? effectiveCell(sheet, address) : pendingEdit
         ? (pendingEdit.formula
             ? { f: pendingEdit.formula, ...(pendingEdit.format ? { nf: pendingEdit.format } : {}) }
             : { v: pendingEdit.value, ...(pendingEdit.format ? { nf: pendingEdit.format } : {}) })
@@ -668,6 +670,15 @@ function renderGrid() {
         }
       }
       if (pendingEdit) td.classList.add("pending");
+      if (cell) {
+        if (cell.fontColor) td.style.color = cell.fontColor;
+        if (cell.fillColor) td.style.backgroundColor = cell.fillColor === "none" ? "transparent" : cell.fillColor;
+        if (cell.fontSize) td.style.fontSize = `${cell.fontSize}pt`;
+        if (cell.fontName) td.style.fontFamily = cell.fontName;
+      }
+      if (pendingEdit?.styleOnly) {
+        td.title = `Imported formatting: ${JSON.stringify(pendingEdit)}`;
+      }
       if (address === state.selected) td.classList.add("sel");
       // Capture before the browser can blur and commit the editor. Both events
       // are needed: some browser/input paths deliver mouse events without a
@@ -698,6 +709,7 @@ function effectiveCell(sheet, address) {
   const pending = state.pending[sheet.name];
   const staged = pending && pending.get(address);
   if (staged) {
+    if (staged.styleOnly) return { ...(sheet.cells || {})[address], ...staged, ...(staged.format ? { nf: staged.format } : {}) };
     return staged.formula
       ? { ...staged, f: staged.formula }
       : { ...staged, v: staged.value };
@@ -1097,9 +1109,35 @@ function beginCellEdit(address, initial) {
 
 // Grid keyboard routing: navigation + type-to-edit when the grid has focus
 // and no cell editor input is active.
+function stageProfileCycle(macro) {
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  const rect = selectionRect();
+  if (!sheet || !rect || !nextProfileCycle) return;
+  const count = (rect.bottom - rect.top + 1) * (rect.right - rect.left + 1);
+  if (count > 50) return setStatus("Select at most 50 cells for imported formatting.");
+  if (Object.values(state.pending).some((map) => [...map.values()].some((edit) => !edit.styleOnly))) return setStatus("Apply or discard value edits before staging imported formatting.");
+  const selected = effectiveCell(sheet, state.selected) || {};
+  const entry = nextProfileCycle(macro, `${state.workbook.fileId || state.workbook.runId}:${sheet.name}:${JSON.stringify(rect)}`, { ...selected, format: selected.format || selected.nf });
+  rememberDraftEdit();
+  const pending = state.pending[sheet.name] || (state.pending[sheet.name] = new Map());
+  for (let row = rect.top; row <= rect.bottom; row++) for (let col = rect.left; col <= rect.right; col++) {
+    const address = `${columnToLetters(col)}${row}`;
+    pending.set(address, { ...pending.get(address), styleOnly: true, ...entry.patch });
+  }
+  updatePendingBar();
+  renderGrid();
+  setStatus(`Staged ${macro}: ${entry.label} on ${count} cell(s). Apply commits formatting to the ledger.`);
+}
+
 function onGridKey(event) {
   const tag = (event.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select") return;
+  const profileCommand = globalThis.SXLProfileRuntime?.match(globalThis.SXLWorkbookProfile, event);
+  if (profileCommand) {
+    event.preventDefault();
+    stageProfileCycle(profileCommand.macro);
+    return;
+  }
   if (event.metaKey || event.altKey) return;
   const current = addressParts(state.selected);
   const rendered = state.rendered || { rows: 40, cols: 12 };
@@ -2081,6 +2119,13 @@ async function applyEdits() {
     .filter((name) => state.pending[name] && state.pending[name].size > 0)
     .sort((a, b) => (a === activeName ? -1 : b === activeName ? 1 : 0));
   if (!sheetNames.length) return;
+  for (const name of sheetNames) {
+    const edits = [...stagedBySheet[name].values()];
+    if (edits.some((edit) => edit.styleOnly) && edits.some((edit) => !edit.styleOnly)) {
+      setStatus("Imported formatting and value edits must be applied separately. Discard this draft, then apply values before formatting.");
+      return;
+    }
+  }
   const executionLane = $("editEngine").value;
   const committed = [];
   if (executionLane === "headless_value") {
@@ -2128,11 +2173,12 @@ async function applyEdits() {
     }
     const edits = [...pending.entries()].map(([address, edit]) => ({
       address,
-      ...(edit.formula ? { formula: edit.formula } : { value: edit.value }),
+      ...(edit.styleOnly ? { styleOnly: true } : edit.formula ? { formula: edit.formula } : { value: edit.value }),
       ...(edit.format ? { format: edit.format } : {}),
       ...(edit.bold !== undefined ? { bold: edit.bold } : {}),
       ...(edit.italic !== undefined ? { italic: edit.italic } : {}),
       ...(edit.fontSize !== undefined ? { fontSize: edit.fontSize } : {}),
+      ...(edit.fontName !== undefined ? { fontName: edit.fontName } : {}),
       ...(edit.fillColor ? { fillColor: edit.fillColor } : {}),
       ...(edit.fontColor ? { fontColor: edit.fontColor } : {}),
       ...(edit.align ? { align: edit.align } : {}),
@@ -2296,6 +2342,16 @@ async function loadModels() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  if (window.SXLWorkbookProfile) {
+    const commands = window.SXLProfileRuntime.commands(window.SXLWorkbookProfile);
+    $("profileSummary").textContent = `Macabacus ${window.SXLWorkbookProfile.version}: ${commands.length} formatting cycles active; ${window.SXLWorkbookProfile.commands.filter((c) => c.host === "Excel").length} Excel mappings imported. Other commands await implementation. Quote and semicolon keys use buttons.`;
+    for (const command of commands) {
+      const button = document.createElement("button");
+      button.textContent = `${command.macro} (${command.key || "unbound"})`;
+      button.addEventListener("click", () => stageProfileCycle(command.macro));
+      $("profileCycles").appendChild(button);
+    }
+  }
   $("openFile").addEventListener("click", () => $("file").click());
   $("recentFilesBtn").addEventListener("click", showRecentWorkbooks);
   $("file").addEventListener("change", () => {
@@ -2807,6 +2863,10 @@ function formulaDisplay(value) {
 // symbol. Anything else (dates, bracketed conditions, text sections) falls
 // back to the raw value — real Excel stays the source of truth.
 function renderExcelNumber(format, value) {
+  if (globalThis.SSF && typeof value === "number") {
+    try { return globalThis.SSF.format(globalThis.SXLProfileRuntime ? globalThis.SXLProfileRuntime.previewFormat(format || "General") : format || "General", value).trim(); }
+    catch { return String(value); }
+  }
   const num = typeof value === "number" ? value : Number(value);
   if (typeof value === "boolean" || value === null || value === undefined || !Number.isFinite(num)) {
     return String(value);

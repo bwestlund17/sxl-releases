@@ -1,0 +1,105 @@
+{
+  "actions": [
+    {
+      "id": "SXLProfile_CycleNumber",
+      "type": "ExecuteFunction",
+      "name": "CycleNumber"
+    },
+    {
+      "id": "SXLProfile_CycleCurrency",
+      "type": "ExecuteFunction",
+      "name": "CycleCurrency"
+    },
+    {
+      "id": "SXLProfile_CyclePercent",
+      "type": "ExecuteFunction",
+      "name": "CyclePercent"
+    },
+    {
+      "id": "SXLProfile_CycleMultiple",
+      "type": "ExecuteFunction",
+      "name": "CycleMultiple"
+    },
+    {
+      "id": "SXLProfile_CycleDate",
+      "type": "ExecuteFunction",
+      "name": "CycleDate"
+    },
+    {
+      "id": "SXLProfile_CycleBinary",
+      "type": "ExecuteFunction",
+      "name": "CycleBinary"
+    },
+    {
+      "id": "SXLProfile_CycleFill",
+      "type": "ExecuteFunction",
+      "name": "CycleFill"
+    },
+    {
+      "id": "SXLProfile_FontCycleStyle",
+      "type": "ExecuteFunction",
+      "name": "FontCycleStyle"
+    },
+    {
+      "id": "SXLProfile_FontCycleSize",
+      "type": "ExecuteFunction",
+      "name": "FontCycleSize"
+    }
+  ],
+  "shortcuts": [
+    {
+      "action": "SXLProfile_CycleNumber",
+      "key": {
+        "default": "Ctrl+Shift+1"
+      }
+    },
+    {
+      "action": "SXLProfile_CycleCurrency",
+      "key": {
+        "default": "Ctrl+Shift+4"
+      }
+    },
+    {
+      "action": "SXLProfile_CyclePercent",
+      "key": {
+        "default": "Ctrl+Shift+5"
+      }
+    },
+    {
+      "action": "SXLProfile_CycleMultiple",
+      "key": {
+        "default": "Ctrl+Shift+8"
+      }
+    },
+    {
+      "action": "SXLProfile_CycleDate",
+      "key": {
+        "default": "Ctrl+Shift+2"
+      }
+    },
+    {
+      "action": "SXLProfile_CycleBinary",
+      "key": {
+        "default": "Ctrl+Shift+Y"
+      }
+    },
+    {
+      "action": "SXLProfile_CycleFill",
+      "key": {
+        "default": "Ctrl+Shift+K"
+      }
+    },
+    {
+      "action": "SXLProfile_FontCycleStyle",
+      "key": {
+        "default": "Ctrl+Alt+O"
+      }
+    },
+    {
+      "action": "SXLProfile_FontCycleSize",
+      "key": {
+        "default": "Alt+Shift+G"
+      }
+    }
+  ]
+}
