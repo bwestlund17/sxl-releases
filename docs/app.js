@@ -2360,10 +2360,10 @@ async function loadModels() {
 window.addEventListener("DOMContentLoaded", async () => {
   if (window.SXLWorkbookProfile) {
     const commands = window.SXLProfileRuntime.commands(window.SXLWorkbookProfile);
-    $("profileSummary").textContent = `Macabacus ${window.SXLWorkbookProfile.version}: ${commands.length} formatting cycles active; ${window.SXLWorkbookProfile.commands.filter((c) => c.host === "Excel").length} Excel mappings imported. Other commands await implementation. Quote and semicolon keys use buttons.`;
+    $("profileSummary").textContent = `Macabacus ${window.SXLWorkbookProfile.version}: ${commands.length} formatting cycles active; ${window.SXLWorkbookProfile.commands.filter((c) => c.host === "Excel").length} Excel mappings imported. Other commands await implementation. Shared alternates are shown beside their imported keys.`;
     for (const command of commands) {
       const button = document.createElement("button");
-      button.textContent = `${command.macro} (${command.key || "unbound"})`;
+      button.textContent = `${command.macro} (${window.SXLProfileRuntime.keyLabel(window.SXLWorkbookProfile, command)})`;
       button.addEventListener("click", () => stageProfileCycle(command.macro));
       $("profileCycles").appendChild(button);
     }

@@ -5,6 +5,25 @@
     return profile.commands.filter(function (c) { return c.host === "Excel" && profile.cycles[c.macro] && profile.cycles[c.macro].length; });
   }
   function supportedOfficeKey(key) { return /^(?:(?:Ctrl|Alt|Shift) )+[A-Z0-9]$/i.test(key); }
+  function shortcutKey(profile, command) {
+    var key = command.portableKey || command.key;
+    if (!supportedOfficeKey(key)) return null;
+    // An alternate must never steal an imported command, including one whose
+    // implementation is still pending. Modifier order/case don't change a chord.
+    var signature = key.toUpperCase().split(/\s+/).sort().join(" ");
+    if (command.portableKey && profile.commands.some(function (other) {
+      return other !== command && other.host === "Excel" &&
+        [other.key, other.portableKey].some(function (candidate) {
+          return candidate && candidate.toUpperCase().split(/\s+/).sort().join(" ") === signature;
+        });
+    })) return null;
+    return key;
+  }
+  function keyLabel(profile, command) {
+    var key = shortcutKey(profile, command);
+    if (!key) return "button only; imported " + (command.key || "unbound");
+    return key + (command.portableKey ? "; imported " + command.key : "");
+  }
   // Excel accepts the legacy unquoted L prefix in this installed LIBOR format;
   // SSF needs it quoted. This affects display only, never the stored format.
   function previewFormat(format) { return String(format).replace(/(^|;)L(?=[+-]0)/g, '$1"L"'); }
@@ -13,9 +32,9 @@
     var target = event.target || {};
     if (/^(INPUT|TEXTAREA|SELECT)$/i.test(target.tagName || "") || target.isContentEditable) return null;
     return commands(profile).find(function (command) {
-      // Both hosts expose buttons for keys outside Office's portable grammar.
-      if (!supportedOfficeKey(command.key)) return false;
-      var parts = command.key.split(" ");
+      var key = shortcutKey(profile, command);
+      if (!key) return false;
+      var parts = key.split(" ");
       var char = parts.pop().toUpperCase();
       var code = /^Digit[0-9]$/.test(event.code || "") ? event.code.slice(5) : /^Key[A-Z]$/.test(event.code || "") ? event.code.slice(3) : String(event.key).toUpperCase();
       return code === char && Boolean(event.ctrlKey) === parts.includes("Ctrl") && Boolean(event.shiftKey) === parts.includes("Shift") && Boolean(event.altKey) === parts.includes("Alt");
@@ -40,7 +59,7 @@
     next.reset = function () { last = null; };
     return next;
   }
-  var api = { commands: commands, match: match, createCycle: createCycle, supportedOfficeKey: supportedOfficeKey, previewFormat: previewFormat };
+  var api = { commands: commands, match: match, createCycle: createCycle, supportedOfficeKey: supportedOfficeKey, shortcutKey: shortcutKey, keyLabel: keyLabel, previewFormat: previewFormat };
   if (typeof module === "object" && module.exports) module.exports = api;
   else g.SXLProfileRuntime = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

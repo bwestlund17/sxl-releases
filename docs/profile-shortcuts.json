@@ -31,6 +31,16 @@
       "name": "CycleBinary"
     },
     {
+      "id": "SXLProfile_CycleRatio",
+      "type": "ExecuteFunction",
+      "name": "CycleRatio"
+    },
+    {
+      "id": "SXLProfile_CycleFontColor",
+      "type": "ExecuteFunction",
+      "name": "CycleFontColor"
+    },
+    {
       "id": "SXLProfile_CycleFill",
       "type": "ExecuteFunction",
       "name": "CycleFill"
@@ -81,6 +91,18 @@
       "action": "SXLProfile_CycleBinary",
       "key": {
         "default": "Ctrl+Shift+Y"
+      }
+    },
+    {
+      "action": "SXLProfile_CycleRatio",
+      "key": {
+        "default": "Alt+Shift+R"
+      }
+    },
+    {
+      "action": "SXLProfile_CycleFontColor",
+      "key": {
+        "default": "Alt+Shift+F"
       }
     },
     {

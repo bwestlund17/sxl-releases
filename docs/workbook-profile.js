@@ -47,7 +47,8 @@
     {
       "host": "Excel",
       "macro": "CycleRatio",
-      "key": "Alt Shift ;"
+      "key": "Alt Shift ;",
+      "portableKey": "Alt Shift R"
     },
     {
       "host": "Excel",
@@ -77,7 +78,8 @@
     {
       "host": "Excel",
       "macro": "CycleFontColor",
-      "key": "Ctrl '"
+      "key": "Ctrl '",
+      "portableKey": "Alt Shift F"
     },
     {
       "host": "Excel",
