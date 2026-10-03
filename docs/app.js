@@ -8,6 +8,7 @@ const state = {
   polling: false,
   // grid: { fileName, fileId?, runId?, sheets: [{name, cells, rows, cols}], active }
   workbook: null,
+  workbookLoadId: 0,
   selected: "A1",
   selectionAnchor: null,
   undoDraft: [],
@@ -366,7 +367,7 @@ async function authFetch(path, options = {}) {
   return response;
 }
 
-async function uploadFile(file) {
+async function uploadFile(file, loadId) {
   if (state.pendingUpload?.file === file && state.pendingUpload.fileId) {
     return { fileId: state.pendingUpload.fileId, filename: file.name, size: file.size, reused: true };
   }
@@ -389,7 +390,7 @@ async function uploadFile(file) {
     }
     throw new Error(body.error || `upload failed: HTTP ${response.status}`);
   }
-  state.pendingUpload = { file, fileId: body.fileId };
+  if (loadId === undefined || loadId === state.workbookLoadId) state.pendingUpload = { file, fileId: body.fileId };
   return body;
 }
 
@@ -415,6 +416,8 @@ function emptyWorkbook(name) {
 }
 
 function setWorkbook(workbook, remember = true) {
+  state.workbookLoadId++;
+  nextProfileCycle?.reset();
   state.workbook = workbook;
   state.selected = "A1";
   state.pending = {};
@@ -442,7 +445,8 @@ function setWorkbook(workbook, remember = true) {
 
 async function restoreSelectedWorkbook() {
   let saved;
-  try { saved = JSON.parse(sessionStorage.getItem(SELECTED_WORKBOOK_KEY) || "null"); }
+  let savedReference;
+  try { savedReference = sessionStorage.getItem(SELECTED_WORKBOOK_KEY); saved = JSON.parse(savedReference || "null"); }
   catch { /* private browsing or stale data */ }
   if (!saved) return false;
   const account = AUTH_ENABLED ? localStorage.getItem("sxl.platform.username") : null;
@@ -460,7 +464,7 @@ async function restoreSelectedWorkbook() {
       return true;
     }
   } catch { /* missing or inaccessible workbook is cleared below */ }
-  try { sessionStorage.removeItem(SELECTED_WORKBOOK_KEY); } catch { /* private browsing */ }
+  try { if (sessionStorage.getItem(SELECTED_WORKBOOK_KEY) === savedReference) sessionStorage.removeItem(SELECTED_WORKBOOK_KEY); } catch { /* private browsing */ }
   return false;
 }
 
@@ -1116,12 +1120,14 @@ function stageProfileCycle(macro) {
   const count = (rect.bottom - rect.top + 1) * (rect.right - rect.left + 1);
   if (count > 50) return setStatus("Select at most 50 cells for imported formatting.");
   if (Object.values(state.pending).some((map) => [...map.values()].some((edit) => !edit.styleOnly))) return setStatus("Apply or discard value edits before staging imported formatting.");
+  const addresses = [];
+  for (let row = rect.top; row <= rect.bottom; row++) for (let col = rect.left; col <= rect.right; col++) addresses.push(`${columnToLetters(col)}${row}`);
+  if (new Set([...(state.pending[sheet.name]?.keys() || []), ...addresses]).size > 50) return setStatus("Apply or discard the current formatting before staging more than 50 cells on this sheet.");
   const selected = { ...sheet.defaultStyle, ...(effectiveCell(sheet, state.selected) || {}) };
   const entry = nextProfileCycle(macro, `${state.workbook.fileId || state.workbook.runId}:${sheet.name}:${JSON.stringify(rect)}`, { ...selected, format: selected.format || selected.nf });
   rememberDraftEdit();
   const pending = state.pending[sheet.name] || (state.pending[sheet.name] = new Map());
-  for (let row = rect.top; row <= rect.bottom; row++) for (let col = rect.left; col <= rect.right; col++) {
-    const address = `${columnToLetters(col)}${row}`;
+  for (const address of addresses) {
     pending.set(address, { ...pending.get(address), styleOnly: true, ...entry.patch });
   }
   updatePendingBar();
@@ -1352,14 +1358,17 @@ function selectCell(address, cell, extend = false) {
   updateFormulaDecorations();
 }
 async function openWorkbookFile(file, requirePreview = false) {
+  const loadId = ++state.workbookLoadId;
   const previousFileId = state.pendingFileId;
   const previousUpload = state.pendingUpload;
   try {
     setStatus("Uploading file...");
-    const uploaded = await uploadFile(file);
+    const uploaded = await uploadFile(file, loadId);
+    if (loadId !== state.workbookLoadId) return false;
     state.pendingFileId = uploaded.fileId;
-    const previewLoaded = await loadWorkbookFromFileId(uploaded.fileId, uploaded.filename || file.name);
+    const previewLoaded = await loadWorkbookFromFileId(uploaded.fileId, uploaded.filename || file.name, loadId);
     if (!previewLoaded) {
+      if (loadId !== state.workbookLoadId) return false;
       if (requirePreview) {
         state.pendingFileId = previousFileId;
         state.pendingUpload = previousUpload;
@@ -1370,6 +1379,7 @@ async function openWorkbookFile(file, requirePreview = false) {
     setStatus(`Loaded ${file.name}${state.workbook?.truncated ? " with a limited grid preview" : ""}.`);
     return true;
   } catch (error) {
+    if (loadId !== state.workbookLoadId) return false;
     if (requirePreview) {
       state.pendingFileId = previousFileId;
       state.pendingUpload = previousUpload;
@@ -1448,12 +1458,14 @@ async function showRecentWorkbooks() {
 }
 
 async function createNewWorkbook() {
+  const loadId = ++state.workbookLoadId;
   const button = $("newFile");
   button.disabled = true;
   try {
     const response = await fetch("blank.xlsx", { cache: "no-store" });
     if (!response.ok) throw new Error(`blank workbook unavailable: HTTP ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
+    if (loadId !== state.workbookLoadId) return;
     if (bytes.length < 100 || bytes.length > 100_000 ||
         bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
       throw new Error("blank workbook asset is invalid");
@@ -1466,16 +1478,17 @@ async function createNewWorkbook() {
       setStatus("New workbook ready. Stage edits, then Apply to create an audited run.");
     }
   } catch (error) {
-    setStatus(`ERROR: ${error.message || error}`);
+    if (loadId === state.workbookLoadId) setStatus(`ERROR: ${error.message || error}`);
   } finally {
     button.disabled = false;
   }
 }
 
-async function loadWorkbookFromFileId(fileId, filename) {
+async function loadWorkbookFromFileId(fileId, filename, loadId = ++state.workbookLoadId) {
   const accountToken = AUTH_ENABLED ? await ensureToken() : null;
   const response = await authFetch(`/api/spreadsheets/workbook/${encodeURIComponent(fileId)}/sheet-data`);
   const body = await response.json().catch(() => ({}));
+  if (loadId !== state.workbookLoadId) return false;
   if (AUTH_ENABLED && state.token !== accountToken) return false;
   if (!response.ok) {
     setStatus(body.error || `no grid preview for ${filename} (HTTP ${response.status})`);
@@ -1494,10 +1507,12 @@ async function loadWorkbookFromFileId(fileId, filename) {
 }
 
 async function loadWorkbookFromRun(runId, artifact) {
+  const loadId = ++state.workbookLoadId;
   const accountToken = AUTH_ENABLED ? await ensureToken() : null;
   const query = artifact ? `?artifact=${encodeURIComponent(artifact)}` : "";
   const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(runId)}/sheet-data${query}`);
   const body = await response.json().catch(() => ({}));
+  if (loadId !== state.workbookLoadId) return false;
   if (AUTH_ENABLED && state.token !== accountToken) return false;
   if (!response.ok) {
     setStatus(body.error || `no result workbook for run (HTTP ${response.status})`);
