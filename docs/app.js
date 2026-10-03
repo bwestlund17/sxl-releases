@@ -519,6 +519,7 @@ function discardEdits() {
   delete state.pending[wb.sheets[wb.active].name];
   updatePendingBar();
   renderGrid();
+  setStatus(`Discarded staged edits on ${wb.sheets[wb.active].name}.`);
 }
 
 function updatePendingBar() {
