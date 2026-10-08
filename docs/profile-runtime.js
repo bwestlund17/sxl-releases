@@ -81,7 +81,7 @@
   // SSF needs it quoted. This affects display only, never the stored format.
   function previewFormat(format) { return String(format).replace(/(^|;)L(?=[+-]0)/g, '$1"L"'); }
   function match(profile, event) {
-    if (event.repeat || event.isComposing || event.metaKey) return null;
+    if (event.repeat || event.isComposing || event.metaKey || (event.getModifierState && event.getModifierState("AltGraph"))) return null;
     var target = event.target || {};
     if (/^(INPUT|TEXTAREA|SELECT)$/i.test(target.tagName || "") || target.isContentEditable) return null;
     return commands(profile).find(function (command) {

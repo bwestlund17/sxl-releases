@@ -235,3 +235,19 @@ input.formula-colored::selection { color: transparent; background: #cbe6d5; }
 .linkish { color: #0d6b3f; cursor: pointer; text-decoration: underline; }
 #runs { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
 #downloads { margin-top: 6px; }
+
+#importedProfile { max-height: 25vh; overflow: auto; flex-shrink: 0; }
+.shortcut-diagnostics { margin: 8px; padding: 8px; border: 1px solid #aab8b1; background: #fff; font-size: 12px; max-height: 40vh; overflow: auto; flex-shrink: 0; }
+.shortcut-diagnostics summary { cursor: pointer; font-weight: 600; }
+.shortcut-diagnostics input { max-width: 90%; margin: 6px 0; }
+.shortcut-diagnostics button { margin: 4px; }
+.shortcut-diagnostics .shortcut-table { max-height: 280px; overflow: auto; }
+.shortcut-diagnostics table { border-collapse: collapse; width: 100%; }
+.shortcut-diagnostics th, .shortcut-diagnostics td { padding: 5px; border: 1px solid #d0d7de; text-align: left; vertical-align: top; }
+@media (max-width: 600px) {
+  .shortcut-diagnostics thead { display: none; }
+  .shortcut-diagnostics table, .shortcut-diagnostics tbody, .shortcut-diagnostics tr, .shortcut-diagnostics td { display: block; }
+  .shortcut-diagnostics td { overflow-wrap: anywhere; }
+  .shortcut-diagnostics td::before { content: attr(data-label) ": "; font-weight: 600; }
+  .shortcut-diagnostics tr { margin-bottom: 8px; }
+}

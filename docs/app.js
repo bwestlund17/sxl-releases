@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const nextProfileCycle = window.SXLProfileRuntime?.createCycle(window.SXLWorkbookProfile);
+const shortcutMonitor = window.SXLWorkbookProfile && window.SXLProfileRuntime && window.SXLShortcutDiagnostics?.createMonitor(window.SXLWorkbookProfile, window.SXLProfileRuntime, "web");
 const state = {
   token: null,
   runId: null,
@@ -1145,12 +1146,13 @@ function stageProfileCycle(macro) {
 }
 
 function onGridKey(event) {
+  if (event.isComposing || event.target.isContentEditable || (event.getModifierState && event.getModifierState("AltGraph"))) return;
   const tag = (event.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select") return;
   const profileCommand = globalThis.SXLProfileRuntime?.match(globalThis.SXLWorkbookProfile, event);
   if (profileCommand) {
     event.preventDefault();
-    stageProfileCycle(profileCommand.macro);
+    if (typeof shortcutMonitor === "undefined" || !shortcutMonitor || !shortcutMonitor.observe(profileCommand.macro, "Grid")) stageProfileCycle(profileCommand.macro);
     return;
   }
   if (event.metaKey || event.altKey) return;
@@ -2367,6 +2369,11 @@ async function loadModels() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   if (window.SXLWorkbookProfile) {
+    if (window.SXLShortcutDiagnostics) {
+      const root = document.createElement("details");
+      $("importedProfile").insertAdjacentElement("afterend", root);
+      window.SXLShortcutDiagnostics.mount(root, shortcutMonitor, window.SXLWorkbookProfile, window.SXLProfileRuntime);
+    }
     const commands = window.SXLProfileRuntime.commands(window.SXLWorkbookProfile);
     $("profileSummary").textContent = `Macabacus ${window.SXLWorkbookProfile.version}: ${commands.length} formatting commands active (11 cycles); ${window.SXLWorkbookProfile.commands.filter((c) => c.host === "Excel").length} Excel mappings imported. Other commands await implementation. Shared alternates are shown beside their imported keys.`;
     for (const command of commands) {
