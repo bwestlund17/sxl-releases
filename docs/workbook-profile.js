@@ -2,7 +2,7 @@
 (function(g){var p={
   "schema": "sxl.workbook-profile.v1",
   "source": "installed Macabacus user settings",
-  "version": "9.9.4.0",
+  "version": "9.9.5.0",
   "commands": [
     {
       "host": "Excel",
@@ -53,12 +53,14 @@
     {
       "host": "Excel",
       "macro": "IncrDecimal",
-      "key": "Ctrl ,"
+      "key": "Ctrl ,",
+      "portableKey": "Alt Shift I"
     },
     {
       "host": "Excel",
       "macro": "DecrDecimal",
-      "key": "Ctrl ."
+      "key": "Ctrl .",
+      "portableKey": "Alt Shift D"
     },
     {
       "host": "Excel",
@@ -2355,5 +2357,9 @@
         }
       }
     ]
-  }
+  },
+  "operations": [
+    "IncrDecimal",
+    "DecrDecimal"
+  ]
 };if(typeof module==="object"&&module.exports)module.exports=p;else g.SXLWorkbookProfile=p;})(typeof globalThis!=="undefined"?globalThis:this);

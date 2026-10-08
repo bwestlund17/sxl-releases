@@ -36,6 +36,16 @@
       "name": "CycleRatio"
     },
     {
+      "id": "SXLProfile_IncrDecimal",
+      "type": "ExecuteFunction",
+      "name": "IncrDecimal"
+    },
+    {
+      "id": "SXLProfile_DecrDecimal",
+      "type": "ExecuteFunction",
+      "name": "DecrDecimal"
+    },
+    {
       "id": "SXLProfile_CycleFontColor",
       "type": "ExecuteFunction",
       "name": "CycleFontColor"
@@ -97,6 +107,18 @@
       "action": "SXLProfile_CycleRatio",
       "key": {
         "default": "Alt+Shift+R"
+      }
+    },
+    {
+      "action": "SXLProfile_IncrDecimal",
+      "key": {
+        "default": "Alt+Shift+I"
+      }
+    },
+    {
+      "action": "SXLProfile_DecrDecimal",
+      "key": {
+        "default": "Alt+Shift+D"
       }
     },
     {

@@ -1124,16 +1124,24 @@ function stageProfileCycle(macro) {
   const addresses = [];
   for (let row = rect.top; row <= rect.bottom; row++) for (let col = rect.left; col <= rect.right; col++) addresses.push(`${columnToLetters(col)}${row}`);
   if (new Set([...(state.pending[sheet.name]?.keys() || []), ...addresses]).size > 50) return setStatus("Apply or discard the current formatting before staging more than 50 cells on this sheet.");
-  const selected = { ...sheet.defaultStyle, ...(effectiveCell(sheet, state.selected) || {}) };
-  const entry = nextProfileCycle(macro, `${state.workbook.fileId || state.workbook.runId}:${sheet.name}:${JSON.stringify(rect)}`, { ...selected, format: selected.format || selected.nf });
+  const cells = addresses.map((address) => {
+    const selected = { ...sheet.defaultStyle, ...(effectiveCell(sheet, address) || {}), ...state.pending[sheet.name]?.get(address) };
+    return { ...selected, address, value: selected.v ?? selected.value, format: selected.format || selected.nf };
+  });
+  let entry;
+  try { entry = nextProfileCycle.plan(macro, `${state.workbook.fileId || state.workbook.runId}:${sheet.name}:${JSON.stringify(rect)}`, cells); }
+  catch (error) { return setStatus(error.message); }
+  const changed = entry.patches.filter((patch) => Object.keys(patch).length > 1);
+  if (!changed.length) return setStatus("No decimal precision change for the selected cells.");
   rememberDraftEdit();
   const pending = state.pending[sheet.name] || (state.pending[sheet.name] = new Map());
-  for (const address of addresses) {
-    pending.set(address, { ...pending.get(address), styleOnly: true, ...entry.patch });
+  for (const patch of changed) {
+    const { address, ...style } = patch;
+    pending.set(address, { ...pending.get(address), styleOnly: true, ...style });
   }
   updatePendingBar();
   renderGrid();
-  setStatus(`Staged ${macro}: ${entry.label} on ${count} cell(s). Apply commits formatting to the ledger.`);
+  setStatus(`Staged ${macro}: ${entry.label} on ${changed.length} cell(s). Apply commits formatting to the ledger.`);
 }
 
 function onGridKey(event) {
@@ -2360,7 +2368,7 @@ async function loadModels() {
 window.addEventListener("DOMContentLoaded", async () => {
   if (window.SXLWorkbookProfile) {
     const commands = window.SXLProfileRuntime.commands(window.SXLWorkbookProfile);
-    $("profileSummary").textContent = `Macabacus ${window.SXLWorkbookProfile.version}: ${commands.length} formatting cycles active; ${window.SXLWorkbookProfile.commands.filter((c) => c.host === "Excel").length} Excel mappings imported. Other commands await implementation. Shared alternates are shown beside their imported keys.`;
+    $("profileSummary").textContent = `Macabacus ${window.SXLWorkbookProfile.version}: ${commands.length} formatting commands active (11 cycles); ${window.SXLWorkbookProfile.commands.filter((c) => c.host === "Excel").length} Excel mappings imported. Other commands await implementation. Shared alternates are shown beside their imported keys.`;
     for (const command of commands) {
       const button = document.createElement("button");
       button.textContent = `${command.macro} (${window.SXLProfileRuntime.keyLabel(window.SXLWorkbookProfile, command)})`;
