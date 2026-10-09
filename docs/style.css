@@ -233,7 +233,8 @@ input.formula-colored::selection { color: transparent; background: #cbe6d5; }
 #runPrice, #editPrice { color: #286443; white-space: nowrap; font-weight: 600; }
 .billing-note { margin: 6px 0 0; color: #436252; font-size: 12px; }
 .linkish { color: #0d6b3f; cursor: pointer; text-decoration: underline; }
-#runs { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+#status { flex-shrink: 0; max-height: 6em; overflow: auto; overflow-wrap: anywhere; }
+#runs { margin: 6px 0 0; padding-left: 18px; font-size: 12px; flex-shrink: 0; max-height: 20vh; overflow-y: auto; overflow-wrap: anywhere; }
 #downloads { margin-top: 6px; }
 
 #importedProfile { max-height: 25vh; overflow: auto; flex-shrink: 0; }

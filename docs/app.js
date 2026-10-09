@@ -2243,6 +2243,7 @@ async function applyEdits() {
       ...(edit.wrapText !== undefined ? { wrapText: edit.wrapText } : {}),
       ...(edit.wrap !== undefined ? { wrap: edit.wrap } : {})
     }));
+    setStatus(`Applying ${sheetName} through the audited ledger…`);
     const run = await submitRun("", {
       edits,
       sheet: sheetName,
@@ -2256,6 +2257,8 @@ async function applyEdits() {
       if (committed.length) {
         const prior = committed.map(({ sheet, runId }) => `${sheet} (${runId.slice(0, 8)})`).join(", ");
         setStatus(`Partial edit: ${prior} committed. ${sheetName} ${run ? `ended ${run.status}` : "has an unconfirmed outcome"}. Review History before retrying.`);
+      } else {
+        setStatus(`${sheetName} ${run ? `ended ${run.status}` : "has an unconfirmed outcome"}. Review History before retrying.`);
       }
       return;
     }
@@ -2281,6 +2284,7 @@ async function applyEdits() {
     updatePendingBar();
     renderGrid();
   }
+  setStatus(`Applied ${committed.map((entry) => entry.sheet).join(", ")} through the audited ledger. Use Review and Undo for the recorded changes.`);
 }
 
 // Undo (E184): replay the audited inverse of a completed run. Both local and
@@ -2289,6 +2293,7 @@ async function applyEdits() {
 async function revertRun(runId, button) {
   if (button) button.disabled = true;
   const note = addMessage("sys", "Reverting…");
+  setStatus("Reverting through the audited ledger…");
   try {
     await ensureToken();
     const response = await authFetch(`/api/spreadsheets/${runId}/revert`, { method: "POST" });
@@ -2296,26 +2301,30 @@ async function revertRun(runId, button) {
     if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
     if (body.reverted) {
       note.className = "msg done";
-    note.textContent = "Reverted — pre-run workbook state restored through the audited ledger.";
-      await loadWorkbookFromRun(runId);
+      note.textContent = "Reverted — pre-run workbook state restored through the audited ledger.";
+      if (await loadWorkbookFromRun(runId)) setStatus("Undo completed. The restored workbook is loaded.");
     } else if (body.runId) {
       // Hosted: revert executed as its own queued job on the standing worker.
       note.textContent = "Revert job queued…";
       const job = await pollRun(body.runId, (m) => { note.textContent = m; });
-      if (!job) return;
+      if (!job) { setStatus("Undo has an unconfirmed outcome. Review History before retrying."); return; }
       if (job.status === "completed") {
         note.className = "msg done";
         note.textContent = "Reverted through the audited ledger.";
-        await loadWorkbookFromRun(body.runId);
+        if (await loadWorkbookFromRun(body.runId)) setStatus("Undo completed. The restored workbook is loaded.");
       } else {
         note.className = "msg err";
         note.textContent = `Revert failed: ${job.error || job.status}`;
+        setStatus(note.textContent);
       }
+    } else {
+      throw new Error("Undo returned no confirmed result. Review History before retrying.");
     }
     loadRuns();
   } catch (error) {
     note.className = "msg err";
     note.textContent = `Revert failed: ${error.message || error}`;
+    setStatus(note.textContent);
   }
 }
 
