@@ -676,11 +676,16 @@ function renderGrid() {
         }
       }
       if (pendingEdit) td.classList.add("pending");
-      if (cell) {
-        if (cell.fontColor) td.style.color = cell.fontColor;
-        if (cell.fillColor) td.style.backgroundColor = cell.fillColor === "none" ? "transparent" : cell.fillColor;
-        if (cell.fontSize) td.style.fontSize = `${cell.fontSize}pt`;
-        if (cell.fontName) td.style.fontFamily = cell.fontName;
+      const styled = { ...sheet.defaultStyle, ...cell };
+      if (styled) {
+        if (styled.fontColor) td.style.color = styled.fontColor;
+        if (styled.fillColor) td.style.backgroundColor = styled.fillColor === "none" ? "transparent" : styled.fillColor;
+        if (styled.fontSize) td.style.fontSize = `${styled.fontSize}pt`;
+        if (styled.fontName) td.style.fontFamily = styled.fontName;
+        if (styled.bold) td.style.fontWeight = "bold";
+        if (styled.italic) td.style.fontStyle = "italic";
+        if (["left", "center", "right"].includes(styled.horizontalAlignment)) td.style.textAlign = styled.horizontalAlignment;
+        if (styled.wrapText && typeof cell?.v !== "number") { td.style.whiteSpace = "normal"; td.style.overflowWrap = "break-word"; }
       }
       if (pendingEdit?.styleOnly) {
         td.title = `Imported formatting: ${JSON.stringify(pendingEdit)}`;
@@ -1115,6 +1120,21 @@ function beginCellEdit(address, initial) {
 
 // Grid keyboard routing: navigation + type-to-edit when the grid has focus
 // and no cell editor input is active.
+function stageStyle(patch) {
+  const wb = state.workbook;
+  if (!wb) return;
+  patch = { ...patch };
+  for (const field of ["fontColor", "fillColor"]) {
+    if (typeof patch[field] === "string" && /^#?[0-9a-f]{6}$/i.test(patch[field])) patch[field] = "#" + patch[field].replace(/^#/, "").toUpperCase();
+  }
+  if (Object.values(state.pending).some((map) => [...map.values()].some((edit) => !edit.styleOnly))) return setStatus("Apply or discard value edits before staging formatting.");
+  const sheet = wb.sheets[wb.active], address = state.selected;
+  const pending = state.pending[sheet.name];
+  if (pending?.size >= 50 && !pending.has(address)) return setStatus("Apply or discard the current formatting before staging more than 50 cells on this sheet.");
+  stageEdit(address, { ...pending?.get(address), styleOnly: true, ...patch });
+  setStatus(`Staged formatting on ${address} — Apply commits it to the audited ledger.`);
+}
+
 function stageProfileCycle(macro) {
   const sheet = state.workbook?.sheets[state.workbook.active];
   const rect = selectionRect();
@@ -1338,7 +1358,7 @@ function formulaBarCommit() {
   const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
   if (!sheet) return;
   const text = $("formulaBar").value.trim();
-  const current = effectiveCell(sheet, state.selected);
+  const current = { ...sheet.defaultStyle, ...effectiveCell(sheet, state.selected) };
   const currentText = current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
   if (text === currentText) return;
   stageEdit(state.selected, text.startsWith("=") ? { formula: text } : { value: text });
@@ -1598,7 +1618,14 @@ function addDownloadButtons(target, run) {
 
 function snapshotLabel(snapshot, other, kind) {
   if (!snapshot || typeof snapshot !== "object") return "(empty)";
-  if (kind === "presentation") return `style ${JSON.stringify(snapshot).slice(0, 200)}`;
+  if (kind === "presentation") {
+    const names = { horizontalAlignment: {1:"general",[-4131]:"left",[-4108]:"center",[-4152]:"right",7:"centerAcrossSelection"}, verticalAlignment: {[-4160]:"top",[-4108]:"center",[-4107]:"bottom"}, underlineStyle: {[-4142]:"none",2:"single",4:"singleAccounting",[-4119]:"double",5:"doubleAccounting"} };
+    const difference = (style, prior) => Object.fromEntries(Object.entries(style || {}).filter(([key, value]) => !(key === "underline" && style.underlineStyle !== undefined) && JSON.stringify(value) !== JSON.stringify(prior?.[key])).map(([key, value]) => [key, names[key]?.[value] ?? value]));
+    const changed = snapshot.cells ? snapshot.cells.map((cell) => ({ address: cell.address, ...difference(cell.style, other?.cells?.find((prior) => prior.address === cell.address)?.style) }))
+      : snapshot.style ? difference(snapshot.style, other?.style) : difference(snapshot, other);
+    const cellStyle = snapshot.cells || snapshot.style || Object.keys(snapshot).some((key) => ["fontName", "fontSize", "fontColor", "fillColor", "bold", "italic", "underline", "underlineStyle", "numberFormat", "horizontalAlignment", "verticalAlignment", "indentLevel", "wrapText", "borders", "format", "align", "wrap"].includes(key));
+    return `${cellStyle ? "style" : "layout"} ${JSON.stringify(changed).slice(0, 1000)}`;
+  }
   if (kind === "structural") return JSON.stringify(snapshot).slice(0, 200);
   const value = snapshot.formula != null ? String(snapshot.formula)
     : snapshot.value != null && snapshot.value !== "" ? String(snapshot.value) : "(empty)";
@@ -1907,8 +1934,10 @@ async function loadRuns() {
     for (const run of (body.runs || []).slice(0, 10)) {
       const item = document.createElement("li");
       const link = document.createElement("a");
+      link.href = "#";
       link.textContent = `${run.runId.slice(0, 8)} · ${run.status} · ${String(run.prompt || "").slice(0, 40)}`;
-      link.addEventListener("click", async () => {
+      link.addEventListener("click", async (event) => {
+        event.preventDefault();
         const card = addMessage("sys", `Loading run ${run.runId.slice(0, 8)}…`);
         try {
           const statusResponse = await authFetch(`/api/spreadsheets/${run.runId}`);
@@ -2152,6 +2181,8 @@ async function applyEdits() {
       return;
     }
   }
+  const formattingSelection = sheetNames.every((name) => [...stagedBySheet[name].values()].every((edit) => edit.styleOnly))
+    ? { sheetName: activeName, selected: state.selected, anchor: state.selectionAnchor } : null;
   const executionLane = $("editEngine").value;
   const committed = [];
   if (executionLane === "headless_value") {
@@ -2207,7 +2238,9 @@ async function applyEdits() {
       ...(edit.fontName !== undefined ? { fontName: edit.fontName } : {}),
       ...(edit.fillColor ? { fillColor: edit.fillColor } : {}),
       ...(edit.fontColor ? { fontColor: edit.fontColor } : {}),
+      ...(edit.horizontalAlignment ? { horizontalAlignment: edit.horizontalAlignment } : {}),
       ...(edit.align ? { align: edit.align } : {}),
+      ...(edit.wrapText !== undefined ? { wrapText: edit.wrapText } : {}),
       ...(edit.wrap !== undefined ? { wrap: edit.wrap } : {})
     }));
     const run = await submitRun("", {
@@ -2238,6 +2271,13 @@ async function applyEdits() {
     // sheet's staged edits and let the next iteration chain from the new run.
     delete stagedBySheet[sheetName];
     state.pending = stagedBySheet;
+    if (formattingSelection) {
+      const activeIndex = state.workbook.sheets.findIndex((sheet) => sheet.name === formattingSelection.sheetName);
+      if (activeIndex >= 0) state.workbook.active = activeIndex;
+      state.selected = formattingSelection.selected;
+      state.selectionAnchor = formattingSelection.anchor;
+      renderSheetTabs();
+    }
     updatePendingBar();
     renderGrid();
   }
@@ -2256,7 +2296,7 @@ async function revertRun(runId, button) {
     if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
     if (body.reverted) {
       note.className = "msg done";
-      note.textContent = "Reverted — pre-run values restored through the audited ledger.";
+    note.textContent = "Reverted — pre-run workbook state restored through the audited ledger.";
       await loadWorkbookFromRun(runId);
     } else if (body.runId) {
       // Hosted: revert executed as its own queued job on the standing worker.
@@ -2434,44 +2474,16 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("gridScroll").addEventListener("paste", onGridPaste);
   $("shortcutHelp").addEventListener("click", () => $("shortcutDialog").showModal());
   $("shortcutClose").addEventListener("click", () => $("shortcutDialog").close());
-  // Number-format presets: stage {value|formula, format} on the selected cell.
+  // Formatting presets never reconstruct or coerce workbook contents.
   for (const button of document.querySelectorAll(".fmt-btn")) {
-    button.addEventListener("click", () => {
-      const wb = state.workbook;
-      if (!wb) return;
-      const sheet = wb.sheets[wb.active];
-      const address = state.selected;
-      const current = effectiveCell(sheet, address);
-      if (!current || (current.v === undefined && !current.f)) {
-        setStatus("Select a cell with a value first.");
-        return;
-      }
-      const staged = current.f ? { formula: current.f, format: button.dataset.format } : { value: String(current.v), format: button.dataset.format };
-      stageEdit(address, staged);
-      setStatus(`Staged ${button.dataset.format} on ${address} — Apply runs it through the audited ledger.`);
-    });
+    button.addEventListener("click", () => stageStyle({ format: button.dataset.format }));
   }
-  // Character/cell style presets (bold, fill, font) — same staged-edit flow.
-  const stageStyle = (patch) => {
-    const wb = state.workbook;
-    if (!wb) return;
-    const sheet = wb.sheets[wb.active];
-    const address = state.selected;
-    const current = effectiveCell(sheet, address);
-    if (!current || (current.v === undefined && !current.f)) {
-      setStatus("Select a cell with a value first.");
-      return;
-    }
-    const base = current.f ? { formula: current.f } : { value: String(current.v) };
-    stageEdit(address, { ...base, ...patch });
-    setStatus(`Staged style on ${address} — Apply runs it through the audited ledger.`);
-  };
   for (const button of document.querySelectorAll("#styleButtons .style-btn")) {
     button.addEventListener("click", () => {
       if (button.dataset.bold) {
         // Toggle against the currently staged bold state.
         const sheet = state.workbook.sheets[state.workbook.active];
-        const current = effectiveCell(sheet, state.selected);
+        const current = { ...sheet.defaultStyle, ...effectiveCell(sheet, state.selected) };
         const nowBold = Boolean(current && current.bold);
         stageStyle({ bold: !nowBold });
       } else if (button.dataset.fill) {
@@ -2480,14 +2492,14 @@ window.addEventListener("DOMContentLoaded", async () => {
         stageStyle({ fontColor: button.dataset.font });
       } else if (button.dataset.italic) {
         const sheet = state.workbook.sheets[state.workbook.active];
-        const current = effectiveCell(sheet, state.selected);
+        const current = { ...sheet.defaultStyle, ...effectiveCell(sheet, state.selected) };
         stageStyle({ italic: !(current && current.italic) });
       } else if (button.dataset.align) {
-        stageStyle({ align: button.dataset.align });
+        stageStyle({ horizontalAlignment: button.dataset.align });
       } else if (button.dataset.wrap !== undefined) {
         const sheet = state.workbook.sheets[state.workbook.active];
-        const current = effectiveCell(sheet, state.selected);
-        stageStyle({ wrap: !(current && current.wrap) });
+        const current = { ...sheet.defaultStyle, ...effectiveCell(sheet, state.selected) };
+        stageStyle({ wrapText: !(current && current.wrapText) });
       }
     });
   }
@@ -2502,7 +2514,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       clearFormulaPoint();
       const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
       $("formulaBar").value = sheet ? (() => {
-        const current = effectiveCell(sheet, state.selected);
+        const current = { ...sheet.defaultStyle, ...effectiveCell(sheet, state.selected) };
         return current ? (current.f || (current.v !== undefined && current.v !== null ? String(current.v) : "")) : "";
       })() : "";
       updateFormulaDecorations();
