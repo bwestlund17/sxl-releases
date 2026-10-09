@@ -600,7 +600,7 @@ function renderGrid() {
     try {
       const stagedEdit = pending && pending.get(address);
       const stored = (sheet.cells || {})[address];
-      if (stagedEdit) {
+      if (stagedEdit && !stagedEdit.styleOnly) {
         value = stagedEdit.formula ? computeStagedFormula(stagedEdit.formula) : stagedEdit.value;
       } else if (stored) {
         if (stored.v !== undefined && stored.v !== null) value = stored.v;
