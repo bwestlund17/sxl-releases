@@ -139,6 +139,10 @@ input.formula-colored::selection { color: transparent; background: #cbe6d5; }
 }
 #grid td.fonly { color: #7a1f1f; font-family: Consolas, monospace; }
 #grid td.pending { background: #fdf6e3; font-weight: 600; }
+/* Trace In/Out overlays are read-only highlights, never a cell mutation. */
+#grid td.trace-in { outline: 2px solid #1a73e8; outline-offset: -2px; background: #e8f0fe; }
+#grid td.trace-out { outline: 2px dashed #c2410c; outline-offset: -2px; background: #fff1e6; }
+#grid td.impact { outline: 3px double #7c3aed; outline-offset: -3px; background: #f5f3ff; }
 #grid td.pending::after {
   content: "•"; color: #b7791f; margin-left: 3px; font-weight: 700;
 }
@@ -209,6 +213,7 @@ input.formula-colored::selection { color: transparent; background: #cbe6d5; }
 .audit-review { margin-top: 8px; padding: 8px; border: 1px solid #cbded2; border-radius: 6px; background: #fff; max-height: 320px; overflow: auto; font-size: 12px; }
 .audit-review ol { margin: 6px 0 0; padding-left: 22px; }
 .audit-review li { margin: 4px 0; }
+.audit-review .recovery-status { padding: 8px; border: 1px solid #fde68a; background: #fffbeb; color: #854d0e; }
 .run-activity { margin-top: 8px; font-size: 12px; }
 .run-activity ol { margin: 6px 0 0; padding-left: 22px; }
 .run-activity li { margin: 3px 0; }
@@ -252,3 +257,5 @@ input.formula-colored::selection { color: transparent; background: #cbe6d5; }
   .shortcut-diagnostics td::before { content: attr(data-label) ": "; font-weight: 600; }
   .shortcut-diagnostics tr { margin-bottom: 8px; }
 }
+
+.audit-review li { white-space: pre-wrap; overflow-wrap: anywhere; }

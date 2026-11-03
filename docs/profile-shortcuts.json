@@ -56,6 +56,11 @@
       "name": "CycleFill"
     },
     {
+      "id": "SXLProfile_AutoColorSelection",
+      "type": "ExecuteFunction",
+      "name": "AutoColorSelection"
+    },
+    {
       "id": "SXLProfile_FontCycleStyle",
       "type": "ExecuteFunction",
       "name": "FontCycleStyle"
@@ -64,6 +69,26 @@
       "id": "SXLProfile_FontCycleSize",
       "type": "ExecuteFunction",
       "name": "FontCycleSize"
+    },
+    {
+      "id": "SXLProfile_ProCopyRight",
+      "type": "ExecuteFunction",
+      "name": "ProCopyRight"
+    },
+    {
+      "id": "SXLProfile_ProCopyDown",
+      "type": "ExecuteFunction",
+      "name": "ProCopyDown"
+    },
+    {
+      "id": "SXLProfile_Flatten",
+      "type": "ExecuteFunction",
+      "name": "Flatten"
+    },
+    {
+      "id": "SXLProfile_FlipSign",
+      "type": "ExecuteFunction",
+      "name": "FlipSign"
     }
   ],
   "shortcuts": [
@@ -134,6 +159,12 @@
       }
     },
     {
+      "action": "SXLProfile_AutoColorSelection",
+      "key": {
+        "default": "Ctrl+Alt+A"
+      }
+    },
+    {
       "action": "SXLProfile_FontCycleStyle",
       "key": {
         "default": "Ctrl+Alt+O"
@@ -143,6 +174,30 @@
       "action": "SXLProfile_FontCycleSize",
       "key": {
         "default": "Alt+Shift+G"
+      }
+    },
+    {
+      "action": "SXLProfile_ProCopyRight",
+      "key": {
+        "default": "Ctrl+Alt+Shift+R"
+      }
+    },
+    {
+      "action": "SXLProfile_ProCopyDown",
+      "key": {
+        "default": "Ctrl+Alt+Shift+E"
+      }
+    },
+    {
+      "action": "SXLProfile_Flatten",
+      "key": {
+        "default": "Ctrl+Shift+3"
+      }
+    },
+    {
+      "action": "SXLProfile_FlipSign",
+      "key": {
+        "default": "Ctrl+Alt+Shift+V"
       }
     }
   ]

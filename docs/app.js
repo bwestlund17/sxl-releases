@@ -10,6 +10,8 @@ const state = {
   // grid: { fileName, fileId?, runId?, sheets: [{name, cells, rows, cols}], active }
   workbook: null,
   workbookLoadId: 0,
+  loadedWorkbookId: 0,
+  accountGeneration: 0,
   selected: "A1",
   selectionAnchor: null,
   undoDraft: [],
@@ -51,6 +53,8 @@ const OAUTH_PROVIDERS = ["google", "github", "azure", "apple", "gitlab", "bitbuc
 const PROVIDER_LABELS = { azure: "Microsoft", linkedin_oidc: "LinkedIn" };
 
 function clearAccountDrafts() {
+  state.workbookLoadId++;
+  state.accountGeneration++;
   state.runPrices = null;
   state.pendingSubmission = null;
   state.pendingUpload = null;
@@ -58,6 +62,7 @@ function clearAccountDrafts() {
   state.sourceUploadIds.clear();
   state.pendingFileId = null;
   state.workbook = null;
+  state.loadedWorkbookId = state.workbookLoadId;
   state.pending = {};
   state.selectionAnchor = null;
   state.undoDraft = [];
@@ -418,6 +423,7 @@ function emptyWorkbook(name) {
 
 function setWorkbook(workbook, remember = true) {
   state.workbookLoadId++;
+  state.loadedWorkbookId = state.workbookLoadId;
   nextProfileCycle?.reset();
   state.workbook = workbook;
   state.selected = "A1";
@@ -490,6 +496,8 @@ function rememberDraftEdit() {
 }
 
 function restoreDraftEdit(from, to, label) {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before changing drafts.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before changing drafts.");
   if (!from.length) {
     setStatus(`No staged edit to ${label.toLowerCase()}. Applied runs use their audited Undo action.`);
     return;
@@ -505,6 +513,8 @@ function restoreDraftEdit(from, to, label) {
 }
 
 function stageEdit(address, edit) {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before editing cells.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before editing cells.");
   const pending = activePending();
   rememberDraftEdit();
   pending.set(address, edit);
@@ -513,6 +523,8 @@ function stageEdit(address, edit) {
 }
 
 function discardEdits() {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before changing drafts.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before changing drafts.");
   if (typeof nextProfileCycle !== "undefined" && nextProfileCycle) nextProfileCycle.reset();
   const wb = state.workbook;
   if (!wb) return;
@@ -676,6 +688,8 @@ function renderGrid() {
         }
       }
       if (pendingEdit) td.classList.add("pending");
+      if (state.trace && state.trace.sheet === sheet.name && state.trace.cells.has(address)) td.classList.add(state.trace.direction === "in" ? "trace-in" : "trace-out");
+      if (state.impact && state.impact.sheet === sheet.name && state.impact.cells.has(address)) td.classList.add("impact");
       const styled = { ...sheet.defaultStyle, ...cell };
       if (styled) {
         if (styled.fontColor) td.style.color = styled.fontColor;
@@ -852,6 +866,8 @@ function selectionRect() {
   };
 }
 function selectAddress(address, extend = false, scroll = true) {
+  if (state.trace) state.trace = null;
+  if (state.impact) state.impact = null;
   const sheet = state.workbook?.sheets[state.workbook.active];
   if (!sheet) return;
   selectCell(address, effectiveCell(sheet, address), extend);
@@ -955,6 +971,7 @@ function onGridCopy(event) {
 }
 
 function onGridCut(event) {
+  if (state.revertingRun) { event.preventDefault(); setStatus("Wait for Undo to finish before changing drafts."); return; }
   const tag = (event.target?.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select") return;
   const rect = selectionRect();
@@ -1047,6 +1064,7 @@ function commitActiveEditor() {
 }
 
 function beginCellEdit(address, initial) {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before editing cells.");
   commitActiveEditor();
   const td = $("grid").querySelector(`td[data-addr="${address}"]`);
   const sheet = state.workbook && state.workbook.sheets[state.workbook.active];
@@ -1121,6 +1139,8 @@ function beginCellEdit(address, initial) {
 // Grid keyboard routing: navigation + type-to-edit when the grid has focus
 // and no cell editor input is active.
 function stageStyle(patch) {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before staging formatting.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before staging formatting.");
   const wb = state.workbook;
   if (!wb) return;
   patch = { ...patch };
@@ -1136,6 +1156,8 @@ function stageStyle(patch) {
 }
 
 function stageProfileCycle(macro) {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before staging formatting.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before staging formatting.");
   const sheet = state.workbook?.sheets[state.workbook.active];
   const rect = selectionRect();
   if (!sheet || !rect || !nextProfileCycle) return;
@@ -1165,14 +1187,338 @@ function stageProfileCycle(macro) {
   setStatus(`Staged ${macro}: ${entry.label} on ${changed.length} cell(s). Apply commits formatting to the ledger.`);
 }
 
+// Profile commands read the selection's committed cells plus its staged
+// drafts, so a command can chain from a value typed a moment ago. Blank cells
+// inherit the workbook's style 0, exactly as Office reads them; without that a
+// "General" source would look different from an empty target and every fill
+// would drag a redundant number format into the draft (the Office-free lane
+// rejects an edit carrying any key besides `value`).
+function profileCellSnapshot(sheet, address) {
+  const committed = { ...sheet.defaultStyle, ...(effectiveCell(sheet, address) || {}) };
+  const staged = state.pending[sheet.name]?.get(address) || {};
+  return {
+    value: staged.value !== undefined ? staged.value : committed.v,
+    formula: staged.formula !== undefined ? staged.formula : committed.f,
+    format: staged.format !== undefined ? staged.format : (committed.format || committed.nf),
+    fontColor: staged.fontColor !== undefined ? staged.fontColor : committed.fontColor
+  };
+}
+
+function profileSelectionCells(sheet, rect) {
+  const cells = [];
+  for (let row = rect.top; row <= rect.bottom; row++) for (let col = rect.left; col <= rect.right; col++) {
+    const address = `${columnToLetters(col)}${row}`;
+    cells.push({ address, ...profileCellSnapshot(sheet, address) });
+  }
+  return cells;
+}
+
+function selectionSize(rect) { return (rect.bottom - rect.top + 1) * (rect.right - rect.left + 1); }
+
+function stageFill(direction) {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before staging a fill.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before staging a fill.");
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  const rect = selectionRect();
+  if (!sheet || !rect) return;
+  const staged = state.pending[sheet.name];
+  if (staged && [...staged.values()].some((edit) => edit.styleOnly)) return setStatus("Apply or discard staged formatting before filling cells.");
+  let plan;
+  try { plan = globalThis.SXLProfileRuntime.planFill(direction, rect, (address) => profileCellSnapshot(sheet, address), 50); }
+  catch (error) { return setStatus(error.message); }
+  const clobbered = plan.edits.filter((edit) => staged?.has(edit.address));
+  if (clobbered.length) return setStatus(`Fill would overwrite ${clobbered.length} staged edit(s) starting at ${clobbered[0].address}. Apply or discard them first.`);
+  if (!plan.edits.length) return setStatus(`${plan.label}: the selected cells already match ${plan.source}.`);
+  rememberDraftEdit();
+  const pending = staged || (state.pending[sheet.name] = new Map());
+  for (const edit of plan.edits) {
+    const { address, ...fields } = edit;
+    pending.set(address, fields);
+  }
+  updatePendingBar();
+  renderGrid();
+  setStatus(`Staged ${plan.label}: ${plan.edits.length} cell(s) from ${plan.source}. Apply commits them to the ledger.`);
+}
+
+// Flip Sign stages value edits (Apply commits them through the audited run).
+function stageFlipSign() {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before changing cells.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before changing cells.");
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  const rect = selectionRect();
+  if (!sheet || !rect) return;
+  if (selectionSize(rect) > 50) return setStatus("Select at most 50 cells.");
+  const staged = state.pending[sheet.name];
+  if (staged && [...staged.values()].some((edit) => edit.styleOnly)) return setStatus("Apply or discard staged formatting before flipping signs.");
+  const plan = globalThis.SXLProfileRuntime.planFlipSign(profileSelectionCells(sheet, rect));
+  const clobbered = plan.edits.filter((edit) => staged?.has(edit.address));
+  if (clobbered.length) return setStatus(`Flip sign would overwrite ${clobbered.length} staged edit(s) starting at ${clobbered[0].address}. Apply or discard them first.`);
+  if (!plan.edits.length) return setStatus(`Flip sign: no numeric or formula cells in the selection${plan.skipped.length ? ` (${plan.skipped.length} skipped)` : ""}.`);
+  rememberDraftEdit();
+  const pending = staged || (state.pending[sheet.name] = new Map());
+  for (const edit of plan.edits) {
+    const { address, ...fields } = edit;
+    pending.set(address, { ...(pending.get(address) || {}), ...fields });
+  }
+  updatePendingBar();
+  renderGrid();
+  setStatus(`Staged Flip sign on ${plan.edits.length} cell(s)${plan.skipped.length ? `; ${plan.skipped.length} non-numeric skipped` : ""}. Apply commits them to the ledger.`);
+}
+
+// Flatten replaces formulas with their calculated values. The ledger records
+// each overwritten formula as a hardcode, so Review warns instead of hiding it.
+function stageFlatten() {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before changing cells.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before changing cells.");
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  const rect = selectionRect();
+  if (!sheet || !rect) return;
+  if (selectionSize(rect) > 50) return setStatus("Select at most 50 cells.");
+  const staged = state.pending[sheet.name];
+  if (staged && [...staged.values()].some((edit) => edit.styleOnly)) return setStatus("Apply or discard staged formatting before flattening formulas.");
+  let plan;
+  try { plan = globalThis.SXLProfileRuntime.planFlatten(profileSelectionCells(sheet, rect)); }
+  catch (error) { return setStatus(error.message); }
+  if (!plan.edits.length) return setStatus(`Flatten: no formula with a calculated value in the selection${plan.skipped.length ? ` (${plan.skipped.length} non-formula skipped)` : ""}.`);
+  const clobbered = plan.edits.filter((edit) => staged?.has(edit.address));
+  if (clobbered.length) return setStatus(`Flatten would overwrite ${clobbered.length} staged edit(s) starting at ${clobbered[0].address}. Apply or discard them first.`);
+  rememberDraftEdit();
+  const pending = staged || (state.pending[sheet.name] = new Map());
+  for (const edit of plan.edits) {
+    const { address, ...fields } = edit;
+    pending.set(address, { ...(pending.get(address) || {}), ...fields });
+  }
+  updatePendingBar();
+  renderGrid();
+  setStatus(`Staged Flatten on ${plan.edits.length} formula cell(s): each becomes its calculated value and the ledger records the overwritten formula. Apply commits them.`);
+}
+
+// AutoColor stages font colour only, which the formatting Apply path records.
+function stageAutoColor() {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before staging formatting.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before staging formatting.");
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  const rect = selectionRect();
+  if (!sheet || !rect) return;
+  if (selectionSize(rect) > 50) return setStatus("Select at most 50 cells for imported formatting.");
+  if (Object.values(state.pending).some((map) => [...map.values()].some((edit) => !edit.styleOnly))) return setStatus("Apply or discard value edits before staging imported formatting.");
+  const plan = globalThis.SXLProfileRuntime.planAutoColor(profileSelectionCells(sheet, rect));
+  if (!plan.edits.length) return setStatus(`AutoColor: the selection already follows the convention${plan.skipped.length ? ` (${plan.skipped.length} blank skipped)` : ""}.`);
+  rememberDraftEdit();
+  const pending = state.pending[sheet.name] || (state.pending[sheet.name] = new Map());
+  for (const edit of plan.edits) {
+    const existing = pending.get(edit.address) || {};
+    pending.set(edit.address, { ...existing, styleOnly: true, fontColor: edit.fontColor });
+  }
+  updatePendingBar();
+  renderGrid();
+  setStatus(`Staged AutoColor on ${plan.edits.length} cell(s): inputs blue, formulas black, cross-sheet links green. Apply commits them to the ledger.`);
+}
+
+// Trace In/Out highlights the cells the selection reads from (precedents) or
+// the cells that read from it (dependents). Read-only: it paints no cell and
+// writes nothing; a reference on another sheet is reported by name instead.
+function workbookCells() {
+  const cells = [];
+  for (const sheet of state.workbook?.sheets || []) {
+    for (const [address, cell] of Object.entries(sheet.cells || {})) {
+      cells.push({ sheet: sheet.name, address, value: cell.v, formula: cell.f, format: cell.nf, fontColor: cell.fontColor });
+    }
+  }
+  return cells;
+}
+
+function clearTrace() {
+  if (!state.trace) return;
+  state.trace = null;
+  renderGrid();
+}
+
+function traceSelection(direction) {
+  const check = globalThis.SXLModelCheck;
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  if (!check || !sheet || !state.selected) return setStatus("Open a workbook before tracing references.");
+  if (state.trace && state.trace.direction === direction && state.trace.address === state.selected) return clearTrace();
+  const graph = check.buildGraph(workbookCells());
+  const ids = direction === "in"
+    ? graph.precedentsOf(sheet.name, state.selected)
+    : graph.dependentsOf(sheet.name, state.selected);
+  if (!ids.length) {
+    clearTrace();
+    return setStatus(`${direction === "in" ? "No traced formulas read" : "No traced formulas depend on"} ${sheet.name}!${state.selected}.`);
+  }
+  const same = new Set(), elsewhere = new Map();
+  for (const id of ids) {
+    const ref = graph.parse(id);
+    if (ref.sheet.toLowerCase() === sheet.name.toLowerCase()) same.add(ref.address);
+    else elsewhere.set(ref.sheet, (elsewhere.get(ref.sheet) || 0) + 1);
+  }
+  state.trace = { direction, sheet: sheet.name, address: state.selected, cells: same };
+  renderGrid();
+  const other = [...elsewhere.entries()].map(([name, count]) => `${count} on ${name}`).join(", ");
+  setStatus(`${direction === "in" ? "Precedents" : "Dependents"} of ${sheet.name}!${state.selected}: ${same.size} cell(s) on this sheet${other ? `, ${other}` : ""}.`);
+}
+
+// Structural impact of the staged edits (or the selection when nothing is
+// staged): every formula cell that would recalculate if those cells changed.
+// This is not a value preview — the browser has no calculation engine — so it
+// reports reach, never numbers.
+function impactPreview() {
+  const check = globalThis.SXLModelCheck;
+  const sheet = state.workbook?.sheets[state.workbook.active];
+  if (!check || !sheet) return setStatus("Open a workbook before previewing impact.");
+  const staged = [...(state.pending[sheet.name]?.keys() || [])];
+  const sources = staged.length ? staged : [state.selected];
+  if (state.impact) { state.impact = null; renderGrid(); return setStatus("Impact preview cleared."); }
+  const graph = check.buildGraph(workbookCells());
+  const same = new Set(), elsewhere = new Map(), depthOf = new Map();
+  for (const address of sources) {
+    for (const level of graph.transitiveDependents(sheet.name, address, 5)) {
+      const ref = graph.parse(level.id);
+      if (ref.sheet.toLowerCase() === sheet.name.toLowerCase()) {
+        same.add(ref.address);
+        depthOf.set(ref.address, Math.min(depthOf.get(ref.address) ?? 99, level.depth));
+      } else elsewhere.set(ref.sheet, (elsewhere.get(ref.sheet) || 0) + 1);
+    }
+  }
+  if (!same.size && !elsewhere.size) return setStatus(`No formula depends on ${sources.length === 1 ? sources[0] : `${sources.length} staged cells`}; nothing would recalculate.`);
+  state.impact = { sheet: sheet.name, cells: same };
+  renderGrid();
+  const listed = [...same].sort((a, b) => (depthOf.get(a) - depthOf.get(b)) || a.localeCompare(b, undefined, { numeric: true })).slice(0, 8);
+  const other = [...elsewhere.entries()].map(([name, count]) => `${count} on ${name}`).join(", ");
+  setStatus(`Impact of ${sources.length === 1 ? sources[0] : `${sources.length} staged cells`}: ${same.size} dependent formula(s) would recalculate on this sheet${other ? `, ${other}` : ""}${listed.length ? ` — ${listed.join(", ")}` : ""}. No value preview without live Excel.`);
+}
+
+// Read-only model checks over the loaded workbook. The preview is complete
+// unless the parser truncated it, and a partial or colour-less scan reports the
+// rules it skipped instead of pretending the workbook is clean.
+function runModelChecks() {
+  const checks = globalThis.SXLModelCheck;
+  const wb = state.workbook;
+  if (!checks || !wb) return setStatus("Open a workbook before running model checks.");
+  const cells = [];
+  for (const sheet of wb.sheets) {
+    for (const [address, cell] of Object.entries(sheet.cells || {})) {
+      cells.push({ sheet: sheet.name, address, value: cell.v, formula: cell.f, format: cell.nf || cell.format, fontColor: cell.fontColor });
+    }
+  }
+  const result = checks.checkModel(cells, { complete: !wb.truncated, colors: true });
+  const skipped = result.skippedRules.length ? ` Skipped: ${result.skippedRules.join(", ")}.` : "";
+  $("checkSummary").textContent = `${result.counts.critical} critical, ${result.counts.warning} warning(s) across ${result.scanned.cells} cell(s) on ${result.scanned.sheets.length} sheet(s).${skipped}`;
+  const list = $("checkResults");
+  list.replaceChildren();
+  if (!result.findings.length) {
+    const empty = document.createElement("li");
+    empty.textContent = "No findings.";
+    list.appendChild(empty);
+  }
+  for (const item of result.findings.slice(0, 200)) {
+    const row = document.createElement("li");
+    row.textContent = `${item.severity === "critical" ? "✕" : "!"} ${item.sheet}!${item.address} — ${item.label}: ${item.detail}`;
+    list.appendChild(row);
+  }
+  const dialog = $("checkDialog");
+  if (dialog && !dialog.open) dialog.showModal();
+  setStatus(`Model checks: ${result.counts.critical} critical, ${result.counts.warning} warning(s) across ${result.scanned.cells} cells.${skipped}`);
+}
+
+// Release only the locally proven, single-cell numeric-format journey.
+// Other commands, ranges and hosted endpoints retain preview + Apply.
+function immediateProfileShortcut(macro) {
+  if (macro !== "IncrDecimal" || AUTH_ENABLED) return false;
+  const endpoint = new URL(API_BASE || ".", location.href);
+  const rect = selectionRect();
+  return ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname) &&
+    rect && rect.top === rect.bottom && rect.left === rect.right;
+}
+
+function executeProfileShortcut(macro) {
+  if (!immediateProfileShortcut(macro)) return setStatus("This shortcut uses preview and Apply on this surface.");
+  const queue = state.shortcutQueue || (state.shortcutQueue = globalThis.SXLProfileRuntime.createCommandQueue());
+  return queue.enqueue(() => {
+    const workbook = state.workbook, sheet = workbook?.sheets[workbook.active], rect = selectionRect();
+    if (!sheet || !rect || !(workbook.fileId || workbook.runId)) throw new Error("Open a saved workbook before using shortcuts.");
+    if (state.revertingRun || state.applyingEdits || ((state.submittingRun || state.polling) && !state.profileShortcutWriting)) throw new Error("Wait for the current run to finish before using shortcuts.");
+    if (state.pendingSubmission && !state.profileShortcutWriting) throw new Error("Resolve the unconfirmed submission in History before using shortcuts.");
+    const ownLoad = state.profileCommandLoad;
+    const loadingOwnResult = state.profileShortcutWriting && ownLoad?.workbook === workbook && ownLoad.loadId === state.workbookLoadId;
+    if (!loadingOwnResult && state.loadedWorkbookId !== undefined && state.loadedWorkbookId !== state.workbookLoadId) throw new Error("Wait for the workbook to finish loading before using shortcuts.");
+    if ($("editEngine").value === "headless_value") throw new Error("Choose Live Excel for formatting shortcuts.");
+    if ((rect.bottom - rect.top + 1) * (rect.right - rect.left + 1) > 50) throw new Error("Select at most 50 cells for imported formatting.");
+    return { workbook, loadId: loadingOwnResult ? ownLoad.sourceLoadId : state.workbookLoadId, account: state.accountGeneration, sheetName: sheet.name, rect: { ...rect }, selected: state.selected, anchor: state.selectionAnchor };
+  }, async (target) => {
+    const workbook = state.workbook;
+    const sameSource = workbook === target.workbook && state.workbookLoadId === target.loadId;
+    const ownResult = state.profileCommandSources?.get(target.workbook) === target.loadId && workbook === state.profileCommandResult && state.workbookLoadId === state.profileCommandResultLoadId;
+    if (state.accountGeneration !== target.account || (!sameSource && !ownResult)) throw new Error("The workbook changed before the shortcut could run.");
+    const sheet = workbook.sheets.find((candidate) => candidate.name === target.sheetName);
+    if (!sheet) throw new Error("The shortcut's worksheet is no longer available.");
+    const addresses = [];
+    for (let row = target.rect.top; row <= target.rect.bottom; row++) for (let col = target.rect.left; col <= target.rect.right; col++) addresses.push(`${columnToLetters(col)}${row}`);
+    if (addresses.some((address) => state.pending[sheet.name]?.has(address))) throw new Error("Apply or discard drafts in the selected cells before using an audited shortcut.");
+    const entry = nextProfileCycle.plan(macro, `${sheet.name}:${JSON.stringify(target.rect)}`, addresses.map((address) => {
+      const cell = { ...sheet.defaultStyle, ...(sheet.cells[address] || {}) };
+      return { ...cell, address, value: cell.v, format: cell.format || cell.nf };
+    }));
+    const edits = entry.patches.filter((patch) => Object.keys(patch).length > 1).map((patch) => ({ ...patch, styleOnly: true }));
+    if (!edits.length) return setStatus("No decimal precision change for the selected cells.");
+    const drafts = state.pending, undo = state.undoDraft, redo = state.redoDraft;
+    const loadId = state.workbookLoadId, account = state.accountGeneration;
+    let run;
+    state.profileShortcutWriting = true;
+    setStatus(`Applying ${macro} through the audited ledger…`);
+    try {
+      run = await submitRun("", {
+        edits, sheet: sheet.name, initFile: workbook.fileId,
+        initRunId: workbook.runId, mode: "action", executionLane: "live_excel",
+        profileShortcut: true, resultGuard: () => state.workbook === workbook && state.workbookLoadId === loadId && state.accountGeneration === account
+      });
+      if (!run || run.status !== "completed" || state.workbook?.runId !== run.runId) throw new Error(`${macro} has an unconfirmed result or its workbook could not be loaded.`);
+      state.profileCommandSources ||= new WeakMap();
+      state.profileCommandSources.set(target.workbook, target.loadId);
+      state.profileCommandSources.set(workbook, loadId);
+      state.profileCommandResult = state.workbook;
+      state.profileCommandResultLoadId = state.workbookLoadId;
+      const activeIndex = state.workbook.sheets.findIndex((candidate) => candidate.name === target.sheetName);
+      if (activeIndex >= 0) state.workbook.active = activeIndex;
+      state.selected = target.selected;
+      state.selectionAnchor = target.anchor;
+      setStatus(`${macro} applied: ${entry.label}. Use Review and Undo for its audit record.`);
+    } catch (error) {
+      queue.halt("Shortcut outcome was not confirmed. Review History and the current workbook, then reload the page before using more shortcuts.");
+      throw error;
+    } finally {
+      state.profileShortcutWriting = false;
+      // Result loading clears drafts. Restore only onto this command's own
+      // source/result, never onto a workbook opened while it was running.
+      if (state.workbook === workbook || (run && state.workbook?.runId === run.runId)) {
+        state.pending = drafts;
+        state.undoDraft = undo;
+        state.redoDraft = redo;
+        updatePendingBar();
+        renderSheetTabs();
+        renderGrid();
+      }
+    }
+  }).catch((error) => setStatus(queue.blocked() || error.message || String(error)));
+}
+
 function onGridKey(event) {
   if (event.isComposing || event.target.isContentEditable || (event.getModifierState && event.getModifierState("AltGraph"))) return;
   const tag = (event.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select") return;
+  if (state.revertingRun) { event.preventDefault(); setStatus("Wait for Undo to finish before editing the grid."); return; }
   const profileCommand = globalThis.SXLProfileRuntime?.match(globalThis.SXLWorkbookProfile, event);
   if (profileCommand) {
     event.preventDefault();
-    if (typeof shortcutMonitor === "undefined" || !shortcutMonitor || !shortcutMonitor.observe(profileCommand.macro, "Grid")) stageProfileCycle(profileCommand.macro);
+    if (typeof shortcutMonitor === "undefined" || !shortcutMonitor || !shortcutMonitor.observe(profileCommand.macro, "Grid")) {
+      const fill = globalThis.SXLProfileRuntime.fillDirection(profileCommand.macro);
+      if (fill) return stageFill(fill);
+      if (profileCommand.macro === "FlipSign") return stageFlipSign();
+      if (profileCommand.macro === "AutoColorSelection") return stageAutoColor();
+      if (profileCommand.macro === "Flatten") return stageFlatten();
+      return immediateProfileShortcut(profileCommand.macro) ? executeProfileShortcut(profileCommand.macro) : stageProfileCycle(profileCommand.macro);
+    }
     return;
   }
   if (event.metaKey || event.altKey) return;
@@ -1300,6 +1646,7 @@ function parseGridPaste(text) {
 }
 
 function stageGridPaste(text) {
+  if (state.revertingRun) { setStatus("Wait for Undo to finish before changing drafts."); return false; }
   const wb = state.workbook;
   if (!wb) return false;
   const sheet = wb.sheets[wb.active];
@@ -1418,6 +1765,8 @@ async function openWorkbookFile(file, requirePreview = false) {
     }
     setStatus(`ERROR: ${error.message || error}`);
     return false;
+  } finally {
+    if (loadId === state.workbookLoadId) state.loadedWorkbookId = loadId;
   }
 }
 
@@ -1511,53 +1860,66 @@ async function createNewWorkbook() {
   } catch (error) {
     if (loadId === state.workbookLoadId) setStatus(`ERROR: ${error.message || error}`);
   } finally {
+    if (loadId === state.workbookLoadId) state.loadedWorkbookId = loadId;
     button.disabled = false;
   }
 }
 
 async function loadWorkbookFromFileId(fileId, filename, loadId = ++state.workbookLoadId) {
-  const accountToken = AUTH_ENABLED ? await ensureToken() : null;
-  const response = await authFetch(`/api/spreadsheets/workbook/${encodeURIComponent(fileId)}/sheet-data`);
-  const body = await response.json().catch(() => ({}));
-  if (loadId !== state.workbookLoadId) return false;
-  if (AUTH_ENABLED && state.token !== accountToken) return false;
-  if (!response.ok) {
-    setStatus(body.error || `no grid preview for ${filename} (HTTP ${response.status})`);
-    if (!state.workbook) setWorkbook(emptyWorkbook(filename));
-    return false;
+  try {
+    const accountToken = AUTH_ENABLED ? await ensureToken() : null;
+    const response = await authFetch(`/api/spreadsheets/workbook/${encodeURIComponent(fileId)}/sheet-data`);
+    const body = await response.json().catch(() => ({}));
+    if (loadId !== state.workbookLoadId) return false;
+    if (AUTH_ENABLED && state.token !== accountToken) return false;
+    if (!response.ok) {
+      setStatus(body.error || `no grid preview for ${filename} (HTTP ${response.status})`);
+      if (!state.workbook) setWorkbook(emptyWorkbook(filename));
+      return false;
+    }
+    setWorkbook({
+      fileName: filename || body.filename || "workbook.xlsx",
+      fileId,
+      runId: null,
+      sheets: body.sheets,
+      active: 0,
+      truncated: body.truncated
+    });
+    return true;
+  } finally {
+    if (loadId === state.workbookLoadId) state.loadedWorkbookId = loadId;
   }
-  setWorkbook({
-    fileName: filename || body.filename || "workbook.xlsx",
-    fileId,
-    runId: null,
-    sheets: body.sheets,
-    active: 0,
-    truncated: body.truncated
-  });
-  return true;
 }
 
-async function loadWorkbookFromRun(runId, artifact) {
+async function loadWorkbookFromRun(runId, artifact, profileShortcut = false) {
+  const workbook = state.workbook, sourceLoadId = state.loadedWorkbookId;
   const loadId = ++state.workbookLoadId;
-  const accountToken = AUTH_ENABLED ? await ensureToken() : null;
-  const query = artifact ? `?artifact=${encodeURIComponent(artifact)}` : "";
-  const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(runId)}/sheet-data${query}`);
-  const body = await response.json().catch(() => ({}));
-  if (loadId !== state.workbookLoadId) return false;
-  if (AUTH_ENABLED && state.token !== accountToken) return false;
-  if (!response.ok) {
-    setStatus(body.error || `no result workbook for run (HTTP ${response.status})`);
-    return false;
+  const ownLoad = profileShortcut ? { workbook, sourceLoadId, loadId } : null;
+  if (ownLoad) state.profileCommandLoad = ownLoad;
+  try {
+    const accountToken = AUTH_ENABLED ? await ensureToken() : null;
+    const query = artifact ? `?artifact=${encodeURIComponent(artifact)}` : "";
+    const response = await authFetch(`/api/spreadsheets/${encodeURIComponent(runId)}/sheet-data${query}`);
+    const body = await response.json().catch(() => ({}));
+    if (loadId !== state.workbookLoadId) return false;
+    if (AUTH_ENABLED && state.token !== accountToken) return false;
+    if (!response.ok) {
+      setStatus(body.error || `no result workbook for run (HTTP ${response.status})`);
+      return false;
+    }
+    setWorkbook({
+      fileName: body.filename || "result.xlsx",
+      fileId: null,
+      runId,
+      sheets: body.sheets,
+      active: 0,
+      truncated: body.truncated
+    });
+    return true;
+  } finally {
+    if (ownLoad && state.profileCommandLoad === ownLoad) state.profileCommandLoad = null;
+    if (loadId === state.workbookLoadId) state.loadedWorkbookId = loadId;
   }
-  setWorkbook({
-    fileName: body.filename || "result.xlsx",
-    fileId: null,
-    runId,
-    sheets: body.sheets,
-    active: 0,
-    truncated: body.truncated
-  });
-  return true;
 }
 
 async function exportWorkbook() {
@@ -1630,12 +1992,12 @@ function snapshotLabel(snapshot, other, kind) {
   const value = snapshot.formula != null ? String(snapshot.formula)
     : snapshot.value != null && snapshot.value !== "" ? String(snapshot.value) : "(empty)";
   const details = [];
-  for (const [field, label] of [["format", "format"], ["note", "note"], ["fontColor", "font color"]]) {
+  for (const [field, label] of [["format", "format"], ["fontColor", "font color"]]) {
     if (snapshot[field] !== other?.[field]) {
       details.push(`${label}: ${String(snapshot[field] ?? "(none)").replace(/\s+/g, " ").slice(0, 100)}`);
     }
   }
-  return details.length ? `${value} [${details.join("; ")}]` : value;
+  return SXLReviewNotes.withReviewNote(details.length ? `${value} [${details.join("; ")}]` : value, snapshot, other);
 }
 
 function sameReceiptIds(actual, expected) {
@@ -1687,6 +2049,15 @@ function addAuditReview(target, run) {
         + `${receipt.warningCount ? ` · ${receipt.warningCount} review warning${receipt.warningCount === 1 ? "" : "s"}` : ""}`
         + `${run.revertedAt ? " · reverted" : ""}`;
       panel.appendChild(heading);
+      for (const session of receipt.sessions) {
+        const message = SXLWriteRecovery.writeRecoveryMessage(session.recovery);
+        if (!message) continue;
+        const recovery = document.createElement("p");
+        recovery.className = "recovery-status";
+        recovery.setAttribute("role", "status");
+        recovery.textContent = `Session ${session.sessionId}: ${message}`;
+        panel.appendChild(recovery);
+      }
       const list = document.createElement("ol");
       let shown = 0;
       for (const session of receipt.sessions) {
@@ -1971,7 +2342,7 @@ async function loadRuns() {
   }
 }
 
-async function renderRunResult(run, target) {
+async function renderRunResult(run, target, resultGuard, profileShortcut = false) {
   if (run.status === "completed") {
     target.className = "msg done";
     const summary = String(run.summary || "").split(/\r?\n/).filter((line) => {
@@ -1984,9 +2355,9 @@ async function renderRunResult(run, target) {
     target.textContent = summary ? summary.slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
     addDownloadButtons(target, run);
     addAuditReview(target, run);
-    if (run.downloadUrl || (run.artifacts || []).some((name) => /\.xlsx?$/i.test(name))) {
+    if ((!resultGuard || resultGuard()) && (run.downloadUrl || (run.artifacts || []).some((name) => /\.xlsx?$/i.test(name)))) {
       const resultRunId = run.revertedAt && run.revertJob?.runId ? run.revertJob.runId : run.runId;
-      const loaded = await loadWorkbookFromRun(resultRunId);
+      const loaded = await loadWorkbookFromRun(resultRunId, undefined, profileShortcut);
       if (loaded) addMessage("sys", "Result workbook loaded into the grid.");
     }
     if ((run.mutationSetIds || []).length > 0) {
@@ -2012,17 +2383,19 @@ async function renderRunResult(run, target) {
     target.className = "msg err";
     target.textContent = `Run ${run.status}: ${run.error || "no details"}`;
     const recorded = run.result?.mutationSetIds || run.mutationSetIds || [];
-    if (recorded.length > 0) {
+    const sessions = run.result?.sessionIds || run.sessionIds || [];
+    if (recorded.length > 0 || sessions.length > 0 || (run.artifacts || []).includes("sxl-audit-receipt.json")) {
       const note = document.createElement("p");
-      note.textContent = `${recorded.length} audited mutation set${recorded.length === 1 ? "" : "s"} recorded before failure. ` +
+      note.textContent = (recorded.length > 0
+        ? `${recorded.length} audited mutation set${recorded.length === 1 ? "" : "s"} recorded before failure. `
+        : "No mutation sets were recorded. Review the audit receipt for unresolved workbook edits. ") +
         (run.downloadUrl ? "Download the recovery workbook before retrying." : "No recovery workbook was published.");
       target.appendChild(note);
       const ids = document.createElement("details");
       const label = document.createElement("summary");
       label.textContent = "Show audit IDs";
       const values = document.createElement("pre");
-      const sessions = run.result?.sessionIds || run.sessionIds || [];
-      values.textContent = `Session IDs: ${sessions.join(", ") || "none"}\nMutation set IDs: ${recorded.join(", ")}`;
+      values.textContent = `Session IDs: ${sessions.join(", ") || "none"}\nMutation set IDs: ${recorded.join(", ") || "none"}`;
       ids.appendChild(label);
       ids.appendChild(values);
       target.appendChild(ids);
@@ -2044,22 +2417,27 @@ async function renderRunResult(run, target) {
 }
 
 async function submitRun(promptText, overrides = {}) {
+  if (state.revertingRun) { setStatus("Wait for Undo to finish before submitting another run."); return null; }
+  if (state.submittingRun) { setStatus("A run is already being submitted or loaded. Wait for its result."); return null; }
+  if (state.shortcutQueue?.busy() && !overrides.profileShortcut) { setStatus("Wait for audited shortcuts to finish before submitting another run."); return null; }
   const prompt = (promptText !== undefined ? promptText : $("prompt").value).trim();
   if (!prompt && !overrides.edits) {
     setStatus("Enter a prompt first.");
     return;
   }
+  state.submittingRun = true;
   $("send").disabled = true;
   if (prompt) addMessage("user", prompt);
   const statusMessage = addMessage("sys", "Submitting…");
   try {
     await ensureToken();
-    let initFile = overrides.initFile || state.workbook?.fileId || null;
-    if (!initFile && state.workbook?.runId) {
+    let initFile = overrides.initFile || (overrides.initRunId ? null : state.workbook?.fileId) || null;
+    const initRunId = overrides.initRunId || state.workbook?.runId;
+    if (!initFile && initRunId) {
       statusMessage.textContent = "Preparing current workbook…";
       const response = await authFetch("/api/spreadsheets/workbook/from-run", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ runId: state.workbook.runId })
+        body: JSON.stringify({ runId: initRunId })
       });
       const promoted = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(promoted.error || `workbook preparation failed: HTTP ${response.status}`);
@@ -2131,12 +2509,14 @@ async function submitRun(promptText, overrides = {}) {
     if (!response.ok) throw new Error(submitted.error || `HTTP ${response.status}`);
     state.pendingSubmission = null;
     try { sessionStorage.removeItem(PENDING_SUBMISSION_KEY); } catch { /* private browsing */ }
-    state.pendingUpload = null;
-    try { sessionStorage.removeItem(PENDING_UPLOAD_KEY); } catch { /* private browsing */ }
-    state.sourceFiles = [];
-    state.sourceUploadIds.clear();
-    $("sourceFile").value = "";
-    $("sourceSelection").hidden = true;
+    if (!overrides.edits) {
+      state.pendingUpload = null;
+      try { sessionStorage.removeItem(PENDING_UPLOAD_KEY); } catch { /* private browsing */ }
+      state.sourceFiles = [];
+      state.sourceUploadIds.clear();
+      $("sourceFile").value = "";
+      $("sourceSelection").hidden = true;
+    }
     if (promptText !== undefined && !overrides.edits) $("prompt").value = "";
     state.runId = submitted.runId;
     loadCredits(); // reservation is atomic with queue insertion
@@ -2146,7 +2526,7 @@ async function submitRun(promptText, overrides = {}) {
     addRunActivity(statusMessage, submitted);
     const run = await pollRun(submitted.runId, (m) => { statusLine.textContent = m; });
     if (!run) return null;
-    await renderRunResult(run, statusMessage);
+    await renderRunResult(run, statusMessage, overrides.resultGuard, overrides.profileShortcut);
     loadCredits();
     loadRuns();
     return run;
@@ -2155,6 +2535,7 @@ async function submitRun(promptText, overrides = {}) {
     statusMessage.textContent = `ERROR: ${error.message || error}`;
     return null;
   } finally {
+    state.submittingRun = false;
     $("send").disabled = false;
   }
 }
@@ -2164,6 +2545,24 @@ async function submitRun(promptText, overrides = {}) {
 // (active sheet first): each result becomes the next run's input via
 // from-run promotion, and every run is its own revertible audit record.
 async function applyEdits() {
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before Apply.");
+  if (state.shortcutQueue?.busy() || state.shortcutQueue?.blocked()) return setStatus(state.shortcutQueue.blocked() || "Wait for audited shortcuts to finish before Apply.");
+  if (state.applyingEdits) {
+    setStatus("An Apply is already in progress. Wait for its result before retrying.");
+    return;
+  }
+  state.applyingEdits = true;
+  const button = $("applyEdits");
+  button.disabled = true;
+  try {
+    await applyPendingEdits();
+  } finally {
+    state.applyingEdits = false;
+    button.disabled = false;
+  }
+}
+
+async function applyPendingEdits() {
   const wb = state.workbook;
   if (!wb) return;
   // Loading each result replaces the workbook and normally clears staged
@@ -2291,6 +2690,32 @@ async function applyEdits() {
 // hosted revert routes run `sxl revert` on the worker/server ledger — the
 // refusal reasons from the ledger guards surface verbatim.
 async function revertRun(runId, button) {
+  if (state.revertingRun || state.submittingRun || state.applyingEdits) return setStatus("Wait for the current workbook operation to finish before Undo.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before Undo.");
+  const workbook = state.workbook, loadId = state.workbookLoadId, account = state.accountGeneration;
+  const drafts = state.pending, undo = state.undoDraft, redo = state.redoDraft;
+  const view = workbook && { sheetName: workbook.sheets[workbook.active]?.name, selected: state.selected, anchor: state.selectionAnchor };
+  const displayThisRun = state.loadedWorkbookId === loadId && (!workbook || workbook.runId === runId ||
+    (!workbook.runId && !workbook.fileId && !Object.values(drafts || {}).some((edits) => edits.size)));
+  const loadRestoredResult = async (restoredRunId) => {
+    if (!displayThisRun || state.workbook !== workbook || state.workbookLoadId !== loadId || state.accountGeneration !== account) {
+      setStatus("Undo completed. Your current workbook was kept. Open the restored run from History to inspect it.");
+      return;
+    }
+    if (!await loadWorkbookFromRun(restoredRunId)) return;
+    state.pending = drafts;
+    state.undoDraft = undo;
+    state.redoDraft = redo;
+    if (view && state.workbook) {
+      const activeIndex = state.workbook.sheets.findIndex((sheet) => sheet.name === view.sheetName);
+      if (activeIndex >= 0) state.workbook.active = activeIndex;
+      state.selected = view.selected;
+      state.selectionAnchor = view.anchor;
+    }
+    updatePendingBar(); renderSheetTabs(); renderGrid();
+    setStatus("Undo completed. The restored workbook is loaded.");
+  };
+  state.revertingRun = true;
   if (button) button.disabled = true;
   const note = addMessage("sys", "Reverting…");
   setStatus("Reverting through the audited ledger…");
@@ -2301,8 +2726,8 @@ async function revertRun(runId, button) {
     if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
     if (body.reverted) {
       note.className = "msg done";
-      note.textContent = "Reverted — pre-run workbook state restored through the audited ledger.";
-      if (await loadWorkbookFromRun(runId)) setStatus("Undo completed. The restored workbook is loaded.");
+      note.textContent = "Reverted this run's recorded changes through the audited ledger.";
+      await loadRestoredResult(runId);
     } else if (body.runId) {
       // Hosted: revert executed as its own queued job on the standing worker.
       note.textContent = "Revert job queued…";
@@ -2311,7 +2736,7 @@ async function revertRun(runId, button) {
       if (job.status === "completed") {
         note.className = "msg done";
         note.textContent = "Reverted through the audited ledger.";
-        if (await loadWorkbookFromRun(body.runId)) setStatus("Undo completed. The restored workbook is loaded.");
+        await loadRestoredResult(body.runId);
       } else {
         note.className = "msg err";
         note.textContent = `Revert failed: ${job.error || job.status}`;
@@ -2325,6 +2750,8 @@ async function revertRun(runId, button) {
     note.className = "msg err";
     note.textContent = `Revert failed: ${error.message || error}`;
     setStatus(note.textContent);
+  } finally {
+    state.revertingRun = false;
   }
 }
 
@@ -2481,12 +2908,29 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("gridScroll").addEventListener("copy", onGridCopy);
   $("gridScroll").addEventListener("cut", onGridCut);
   $("gridScroll").addEventListener("paste", onGridPaste);
+  $("checksHelp").addEventListener("click", runModelChecks);
+  $("checkClose").addEventListener("click", () => $("checkDialog").close());
   $("shortcutHelp").addEventListener("click", () => $("shortcutDialog").showModal());
   $("shortcutClose").addEventListener("click", () => $("shortcutDialog").close());
   // Formatting presets never reconstruct or coerce workbook contents.
   for (const button of document.querySelectorAll(".fmt-btn")) {
     button.addEventListener("click", () => stageStyle({ format: button.dataset.format }));
   }
+  // Fast Fill is also reachable from the palette: a browser-owned or AltGr
+  // chord must never be the only way to run a command.
+  const fillDownButton = $("btnFillDown"), fillRightButton = $("btnFillRight");
+  if (fillDownButton) fillDownButton.addEventListener("click", () => stageFill("down"));
+  if (fillRightButton) fillRightButton.addEventListener("click", () => stageFill("right"));
+  const flipSignButton = $("btnFlipSign"), autoColorButton = $("btnAutoColor");
+  if (flipSignButton) flipSignButton.addEventListener("click", () => stageFlipSign());
+  if (autoColorButton) autoColorButton.addEventListener("click", () => stageAutoColor());
+  const flattenButton = $("btnFlatten");
+  if (flattenButton) flattenButton.addEventListener("click", () => stageFlatten());
+  const impactButton = $("btnImpact");
+  if (impactButton) impactButton.addEventListener("click", impactPreview);
+  const traceInButton = $("btnTraceIn"), traceOutButton = $("btnTraceOut");
+  if (traceInButton) traceInButton.addEventListener("click", () => traceSelection("in"));
+  if (traceOutButton) traceOutButton.addEventListener("click", () => traceSelection("out"));
   for (const button of document.querySelectorAll("#styleButtons .style-btn")) {
     button.addEventListener("click", () => {
       if (button.dataset.bold) {
@@ -2923,10 +3367,15 @@ function renderExcelNumber(format, value) {
   if (typeof value === "boolean" || value === null || value === undefined || !Number.isFinite(num)) {
     return String(value);
   }
-  const section = String(format || "General").split(";")[0];
+  const sections = String(format || "General").split(";");
+  const section = num < 0 && sections[1] ? sections[1] :
+    num === 0 && sections[2] ? sections[2] : sections[0];
+  if (num === 0 && /^\s*[-–]\s*$/.test(section)) return "–";
   if (section === "General" || !/^[^"\[\]yYdDhHsS]*$/.test(section)) return String(value);
   const isPercent = section.includes("%");
-  const hasCurrency = section.startsWith("$");
+  const hasCurrency = section.includes("$");
+  const hasMultiple = /x\s*$/i.test(section);
+  const parentheses = section.includes("(") && section.includes(")");
   const thousands = section.includes(",");
   const decMatch = section.match(/\.(0+)/);
   const decimals = decMatch ? decMatch[1].length : 0;
@@ -2936,6 +3385,7 @@ function renderExcelNumber(format, value) {
     const [intPart, decPart] = text.split(".");
     text = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (decPart ? "." + decPart : "");
   }
-  if (scaled < 0) text = "-" + text;
-  return (hasCurrency ? "$" : "") + text + (isPercent ? "%" : "");
+  const formatted = (hasCurrency ? "$" : "") + text +
+    (isPercent ? "%" : "") + (hasMultiple ? "x" : "");
+  return scaled < 0 ? (parentheses ? `(${formatted})` : `-${formatted}`) : formatted;
 }

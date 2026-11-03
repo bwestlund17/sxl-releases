@@ -296,12 +296,14 @@
     {
       "host": "Excel",
       "macro": "ProCopyRight",
-      "key": "Ctrl Shift R"
+      "key": "Ctrl Shift R",
+      "portableKey": "Ctrl Alt Shift R"
     },
     {
       "host": "Excel",
       "macro": "ProCopyDown",
-      "key": "Ctrl Shift D"
+      "key": "Ctrl Shift D",
+      "portableKey": "Ctrl Alt Shift E"
     },
     {
       "host": "Excel",
@@ -336,7 +338,8 @@
     {
       "host": "Excel",
       "macro": "FlipSign",
-      "key": "Ctrl Shift N"
+      "key": "Ctrl Shift N",
+      "portableKey": "Ctrl Alt Shift V"
     },
     {
       "host": "Excel",
@@ -2360,6 +2363,11 @@
   },
   "operations": [
     "IncrDecimal",
-    "DecrDecimal"
+    "DecrDecimal",
+    "ProCopyRight",
+    "ProCopyDown",
+    "FlipSign",
+    "AutoColorSelection",
+    "Flatten"
   ]
 };if(typeof module==="object"&&module.exports)module.exports=p;else g.SXLWorkbookProfile=p;})(typeof globalThis!=="undefined"?globalThis:this);
