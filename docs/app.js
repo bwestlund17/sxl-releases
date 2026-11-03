@@ -2342,6 +2342,30 @@ async function loadRuns() {
   }
 }
 
+// Every audited change gets an audit: once the result workbook is back in the
+// grid, run the same model checks the Checks button uses and attach a one-line
+// summary to the run card. Read-only, and it never blocks the run.
+function appendRunChecks(target) {
+  // A page slice used by the web tests may not define the app state; the
+  // summary is optional chrome, never a reason to break the run card.
+  if (typeof state === "undefined" || !state) return null;
+  const check = globalThis.SXLModelCheck;
+  const wb = state.workbook;
+  if (!check || !wb || !target) return null;
+  let result;
+  try { result = check.checkModel(workbookCells(), { complete: !wb.truncated, colors: true }); }
+  catch { return null; }
+  state.postRunChecks = result;
+  const skipped = result.skippedRules.length ? ` (skipped: ${result.skippedRules.join(", ")})` : "";
+  const listed = result.findings.slice(0, 3).map((item) => `${item.sheet}!${item.address} ${item.label}`);
+  const line = document.createElement("div");
+  line.className = "run-checks";
+  line.textContent = `Model checks after this change: ${result.counts.critical} critical, ${result.counts.warning} warning(s)${skipped}` +
+    (listed.length ? ` — ${listed.join("; ")}${result.findings.length > listed.length ? `; +${result.findings.length - listed.length} more` : ""}` : " — no findings");
+  target.appendChild(line);
+  return result;
+}
+
 async function renderRunResult(run, target, resultGuard, profileShortcut = false) {
   if (run.status === "completed") {
     target.className = "msg done";
@@ -2355,13 +2379,17 @@ async function renderRunResult(run, target, resultGuard, profileShortcut = false
     target.textContent = summary ? summary.slice(0, 4000) : `Run ${run.runId.slice(0, 8)} completed.`;
     addDownloadButtons(target, run);
     addAuditReview(target, run);
+    let resultLoaded = false;
     if ((!resultGuard || resultGuard()) && (run.downloadUrl || (run.artifacts || []).some((name) => /\.xlsx?$/i.test(name)))) {
       const resultRunId = run.revertedAt && run.revertJob?.runId ? run.revertJob.runId : run.runId;
-      const loaded = await loadWorkbookFromRun(resultRunId, undefined, profileShortcut);
-      if (loaded) addMessage("sys", "Result workbook loaded into the grid.");
+      resultLoaded = await loadWorkbookFromRun(resultRunId, undefined, profileShortcut);
+      if (resultLoaded) addMessage("sys", "Result workbook loaded into the grid.");
     }
     if ((run.mutationSetIds || []).length > 0) {
       target.appendChild(document.createElement("br"));
+      // The card is rendered after the workbook reload, so the checks describe
+      // the workbook as it is now, not the pre-run file.
+      if (resultLoaded) appendRunChecks(target);
       if (run.revertedAt || run.revertJob) {
         const undoState = document.createElement("span");
         undoState.textContent = run.revertedAt ? "Reverted through the audited ledger."

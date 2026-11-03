@@ -150,35 +150,39 @@
     }
     return out;
   }
-  function columnOf(address) { var match = /^([A-Z]+)/.exec(String(address).toUpperCase()); return match ? columnNumber(match[1]) : 0; }
+  function columnOf(match) { return match && match[1] ? columnNumber(match[1]) : 0; }
   // A cell whose formula differs from BOTH neighbours while those neighbours
   // agree is the classic copy/paste break. Interior-only keeps totals and
-  // deliberately different row ends out of the report.
-  function inconsistentRows(list, findings) {
-    var rows = new Map();
-    list.forEach(function (cell) {
-      if (!isFormula(cell)) return;
-      var match = /^([A-Z]+)(\d+)$/.exec(String(cell.address).toUpperCase());
-      if (!match) return;
-      var id = String(cell.sheet).toLowerCase() + "!" + match[2];
-      if (!rows.has(id)) rows.set(id, []);
-      rows.get(id).push({ cell: cell, column: columnNumber(match[1]) });
-    });
-    rows.forEach(function (entries) {
-      entries.sort(function (a, b) { return a.column - b.column; });
-      for (var index = 1; index < entries.length - 1; index++) {
-        var before = entries[index - 1], current = entries[index], after = entries[index + 1];
-        if (current.column !== before.column + 1 || after.column !== current.column + 1) continue;
-        var previous = relativeSignature(before.cell.formula, before.cell.address);
-        var mine = relativeSignature(current.cell.formula, current.cell.address);
-        var next = relativeSignature(after.cell.formula, after.cell.address);
-        if (!previous || !mine || !next) continue;
-        if (previous === next && mine !== previous) {
-          findings.push(finding("inconsistent_formula", current.cell,
-            "breaks the row's formula pattern: its neighbours agree but it does not",
-            current.cell.formula));
+  // deliberately different row/column ends out of the report. The same check
+  // runs along rows and down columns because a model is built both ways.
+  function inconsistentRuns(list, findings) {
+    [{ axis: "row", group: function (m) { return m[2]; }, order: function (m) { return columnOf(m); } },
+     { axis: "column", group: function (m) { return m[1]; }, order: function (m) { return Number(m[2]); } }].forEach(function (run) {
+      var groups = new Map();
+      list.forEach(function (cell) {
+        if (!isFormula(cell)) return;
+        var match = /^([A-Z]+)(\d+)$/.exec(String(cell.address).toUpperCase());
+        if (!match) return;
+        var id = String(cell.sheet).toLowerCase() + "!" + run.group(match);
+        if (!groups.has(id)) groups.set(id, []);
+        groups.get(id).push({ cell: cell, rank: run.order(match) });
+      });
+      groups.forEach(function (entries) {
+        entries.sort(function (a, b) { return a.rank - b.rank; });
+        for (var index = 1; index < entries.length - 1; index++) {
+          var before = entries[index - 1], current = entries[index], after = entries[index + 1];
+          if (current.rank !== before.rank + 1 || after.rank !== current.rank + 1) continue;
+          var previous = relativeSignature(before.cell.formula, before.cell.address);
+          var mine = relativeSignature(current.cell.formula, current.cell.address);
+          var next = relativeSignature(after.cell.formula, after.cell.address);
+          if (!previous || !mine || !next) continue;
+          if (previous === next && mine !== previous) {
+            findings.push(finding("inconsistent_formula", current.cell,
+              "breaks the " + run.axis + "'s formula pattern: its neighbours agree but it does not",
+              current.cell.formula));
+          }
         }
-      }
+      });
     });
   }
   function finding(rule, cell, detail, evidence) {
@@ -229,7 +233,7 @@
         if (!dependents.has(id)) findings.push(finding("unused_input", cell, "no scanned formula depends on this input", valueText));
       }
     });
-    inconsistentRows(list, findings);
+    inconsistentRuns(list, findings);
     if (!options.complete) skipped.push("unused_input");
     if (!colors) skipped.push("uncolored_input", "input_colored_formula");
     var order = { critical: 0, warning: 1, info: 2 };
