@@ -13,7 +13,8 @@
     external_link: { severity: "warning", label: "External link" },
     uncolored_input: { severity: "warning", label: "Input not coloured" },
     input_colored_formula: { severity: "warning", label: "Formula coloured as an input" },
-    unused_input: { severity: "warning", label: "Input with no dependents" }
+    unused_input: { severity: "warning", label: "Input with no dependents" },
+    number_as_text: { severity: "warning", label: "Number stored as text" }
   };
   function columnNumber(letters) {
     var n = 0;
@@ -191,6 +192,19 @@
   // `cells` are {sheet, address, value, formula, format, fontColor}; `complete`
   // means the scan covered each sheet's whole used range, which is what makes
   // the dependency rule honest.
+  // A formatted numeric string — "1,234", "$1.5m" is NOT numeric, "(2,000)",
+  // "12%". Requiring a formatting signal keeps a label like "2024" or a plain
+  // "1" out of the report, because those are legitimately text.
+  function looksLikeFormattedNumber(text) {
+    var trimmed = String(text).trim();
+    if (!trimmed || trimmed.length > 24) return false;
+    var parenthesised = /^\(.*\)$/.test(trimmed);
+    var inner = parenthesised ? trimmed.slice(1, -1).trim() : trimmed;
+    if (!/[0-9]/.test(inner)) return false;
+    if (!/[,.]/.test(inner) && !/[%$€£]/.test(inner) && !parenthesised) return false;
+    return /^[$\u20ac\u00a3]?\s*-?\d[\d,]*(?:\.\d+)?\s*%?$/.test(inner);
+  }
+
   function checkModel(cells, options) {
     options = options || {};
     var list = (cells || []).filter(function (cell) { return cell && cell.address && cell.sheet; });
@@ -225,6 +239,9 @@
         if (colors && sameColor(cell.fontColor, BLUE)) findings.push(finding("input_colored_formula", cell, "a formula is painted as a hard-coded input", cell.formula));
         return;
       }
+      if (typeof cell.value === "string" && looksLikeFormattedNumber(cell.value)) {
+        findings.push(finding("number_as_text", cell, "numeric value stored as text; formulas that reference it compare text, not numbers", valueText));
+      }
       var numeric = typeof cell.value === "number" || typeof cell.value === "boolean";
       if (!numeric) return;
       if (colors && !sameColor(cell.fontColor, BLUE)) findings.push(finding("uncolored_input", cell, "hard-coded input is not blue", valueText));
@@ -249,6 +266,6 @@
       counts: counts, findings: findings, skippedRules: skipped, rules: Object.keys(RULES)
     };
   }
-  var api = { checkModel: checkModel, precedentKeys: precedentKeys, relativeSignature: relativeSignature, buildGraph: buildGraph, rules: RULES, ERROR: ERROR };
+  var api = { checkModel: checkModel, looksLikeFormattedNumber: looksLikeFormattedNumber, precedentKeys: precedentKeys, relativeSignature: relativeSignature, buildGraph: buildGraph, rules: RULES, ERROR: ERROR };
   if (typeof module === "object" && module.exports) module.exports = api; else g.SXLModelCheck = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
