@@ -1441,24 +1441,21 @@ function renderCheckActions(result, wb) {
   actions.appendChild(fix);
 }
 
-function convertTextNumbers(addresses) {
+// Shared staging for both entry points (the Checks dialog and the selection
+// action). The Office-free lane writes plain values and refuses formatting, so
+// the number format only travels when the selected engine can accept it —
+// saying which one happened is the honest half of that trade.
+function stageNumberConversions(cells, sheetName) {
   const profile = globalThis.SXLProfileRuntime;
-  const wb = state.workbook;
-  if (!profile || !wb || !addresses || !addresses.size) return;
+  if (!profile) return setStatus("The profile runtime is unavailable; reload the page.");
   if (state.revertingRun) return setStatus("Wait for Undo to finish before editing cells.");
   if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before editing cells.");
-  const sheet = wb.sheets[wb.active];
-  const cells = [...addresses].map((address) => {
-    const cell = (sheet.cells || {})[address] || {};
-    return { address, value: cell.v, formula: cell.f };
-  });
-  const plan = profile.planConvertNumbers(cells);
-  if (!plan.edits.length) return setStatus("Nothing on this sheet can be converted safely.");
-  // The Office-free lane writes plain values and refuses formatting, so the
-  // number format only travels when the selected engine can accept it. Saying
-  // which one happened is the honest half of that trade.
-  const engine = ($("editEngine") || {}).value;
-  const allowFormat = engine !== "headless_value";
+  const plan = profile.planConvertNumbers(cells || []);
+  if (!plan.edits.length) {
+    setStatus(`Nothing in ${sheetName} can be converted safely${plan.skipped.length ? ` (${plan.skipped.length} cell(s) skipped)` : ""}.`);
+    return null;
+  }
+  const allowFormat = ($("editEngine") || {}).value !== "headless_value";
   rememberDraftEdit();
   const pending = activePending();
   for (const edit of plan.edits) {
@@ -1466,11 +1463,34 @@ function convertTextNumbers(addresses) {
   }
   updatePendingBar();
   renderGrid();
-  const dialog = $("checkDialog");
-  if (dialog && dialog.open) dialog.close();
-  setStatus(`Staged conversion of ${plan.edits.length} text number${plan.edits.length === 1 ? "" : "s"} on ${sheet.name}. ` +
+  setStatus(`Staged conversion of ${plan.edits.length} text number${plan.edits.length === 1 ? "" : "s"} on ${sheetName}. ` +
     (allowFormat ? "Apply commits them to the ledger with a number format that keeps their appearance."
       : "Apply commits them to the ledger as plain numbers; choose Live Excel to keep the original number format."));
+  return plan;
+}
+
+function convertTextNumbers(addresses) {
+  const wb = state.workbook;
+  if (!wb || !addresses || !addresses.size) return;
+  const sheet = wb.sheets[wb.active];
+  const cells = [...addresses].map((address) => {
+    const cell = (sheet.cells || {})[address] || {};
+    return { address, value: cell.v, formula: cell.f };
+  });
+  if (!stageNumberConversions(cells, sheet.name)) return;
+  const dialog = $("checkDialog");
+  if (dialog && dialog.open) dialog.close();
+}
+
+// Selection action: the same conversion for cells the checks did not flag.
+function convertSelectionNumbers() {
+  const wb = state.workbook;
+  if (!wb) return setStatus("Open a workbook first.");
+  const rect = selectionRect();
+  if (!rect) return setStatus("Select cells to convert.");
+  const sheet = wb.sheets[wb.active];
+  const cells = profileSelectionCells(sheet, rect).map((cell) => ({ address: cell.address, value: cell.value, formula: cell.formula }));
+  stageNumberConversions(cells, sheet.name);
 }
 
 // Release only the locally proven, single-cell numeric-format journey.
@@ -2988,6 +3008,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("gridScroll").addEventListener("cut", onGridCut);
   $("gridScroll").addEventListener("paste", onGridPaste);
   $("checksHelp").addEventListener("click", runModelChecks);
+  $("btnConvertNumbers").addEventListener("click", convertSelectionNumbers);
   $("checkClose").addEventListener("click", () => $("checkDialog").close());
   $("shortcutHelp").addEventListener("click", () => $("shortcutDialog").showModal());
   $("shortcutClose").addEventListener("click", () => $("shortcutDialog").close());
