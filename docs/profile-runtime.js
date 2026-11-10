@@ -254,6 +254,55 @@
     });
     return { label: "AutoColor selection", targets: (cells || []).length, skipped: skipped, edits: edits };
   }
+  // A "1,234" or "$1,500" typed into a cell is text, so SUM skips it and every
+  // formula that references it compares strings. This planner turns the model
+  // check's number_as_text findings into audited value edits, and it sets a
+  // number format so the conversion does not change how the cell looks.
+  // Deliberately narrow, and the same boundary as the check: a plain "2024" or
+  // a bare "42" is left alone because it is a label far more often than a
+  // mistyped number.
+  function parseFormattedNumber(text) {
+    var trimmed = String(text === null || text === undefined ? "" : text).trim();
+    if (!trimmed || trimmed.length > 24) return null;
+    var parenthesised = /^\(.*\)$/.test(trimmed);
+    var inner = parenthesised ? trimmed.slice(1, -1).trim() : trimmed;
+    if (!/[0-9]/.test(inner)) return null;
+    if (!/[,.]/.test(inner) && !/[%$\u20ac\u00a3]/.test(inner) && !parenthesised) return null;
+    var percent = /%$/.test(inner);
+    if (percent) inner = inner.slice(0, -1).trim();
+    var currency = /^[$\u20ac\u00a3]/.test(inner) ? inner.charAt(0) : "";
+    if (currency) inner = inner.slice(1).trim();
+    if (!/^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$/.test(inner) && !/^-?\d+(?:\.\d+)?$/.test(inner)) return null;
+    var negative = parenthesised || inner.charAt(0) === "-";
+    var digits = inner.replace(/^-/, "").replace(/,/g, "");
+    var value = Number(digits);
+    if (!Number.isFinite(value)) return null;
+    if (percent) value = value / 100;
+    if (negative) value = -value;
+    var decimals = (digits.split(".")[1] || "").length;
+    var grouped = inner.indexOf(",") >= 0;
+    var body = (grouped ? "#,##0" : "0") + (decimals > 0 ? "." + "0".repeat(decimals) : "");
+    var format = currency + body;
+    if (percent) format = body + "%";
+    if (negative) format = format + ";" + (currency ? "(" + currency + body + ")" : "(" + body + ")");
+    return { value: String(value), format: format };
+  }
+
+  function planConvertNumbers(cells) {
+    var edits = [], skipped = [];
+    (cells || []).forEach(function (cell) {
+      var address = cell && cell.address;
+      if (!address) return;
+      var formula = typeof cell.formula === "string" && cell.formula.charAt(0) === "=" ? cell.formula : null;
+      if (formula) { skipped.push(address); return; }
+      var parsed = typeof cell.value === "string" ? parseFormattedNumber(cell.value) : null;
+      if (!parsed) { skipped.push(address); return; }
+      // Already formatted as a number? Then the value is the only change.
+      edits.push({ address: address, value: parsed.value, format: parsed.format });
+    });
+    return { label: "Convert numbers stored as text", targets: (cells || []).length, skipped: skipped, edits: edits };
+  }
+
   function supportedOfficeKey(key) { return /^(?:(?:Ctrl|Alt|Shift) )+[A-Z0-9]$/i.test(key); }
   function shortcutKey(profile, command) {
     var key = command.portableKey || command.key;
@@ -348,7 +397,7 @@
       }
     };
   }
-  var api = { commands: commands, match: match, createCycle: createCycle, createCommandQueue: createCommandQueue, isDecimal: isDecimal, decimalFormat: decimalFormat, supportedOfficeKey: supportedOfficeKey, shortcutKey: shortcutKey, keyLabel: keyLabel, previewFormat: previewFormat, planFlipSign: planFlipSign, planAutoColor: planAutoColor, planFlatten: planFlatten, AUTO_COLOR: AUTO_COLOR, isFill: isFill, fillDirection: fillDirection, columnLetters: columnLetters, shiftFormulaReferences: shiftFormulaReferences, planFill: planFill };
+  var api = { commands: commands, match: match, createCycle: createCycle, createCommandQueue: createCommandQueue, isDecimal: isDecimal, decimalFormat: decimalFormat, supportedOfficeKey: supportedOfficeKey, shortcutKey: shortcutKey, keyLabel: keyLabel, previewFormat: previewFormat, planFlipSign: planFlipSign, planAutoColor: planAutoColor, planFlatten: planFlatten, AUTO_COLOR: AUTO_COLOR, isFill: isFill, fillDirection: fillDirection, columnLetters: columnLetters, shiftFormulaReferences: shiftFormulaReferences, planFill: planFill, planConvertNumbers: planConvertNumbers, parseFormattedNumber: parseFormattedNumber };
   if (typeof module === "object" && module.exports) module.exports = api;
   else g.SXLProfileRuntime = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

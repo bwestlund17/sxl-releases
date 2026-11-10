@@ -1417,9 +1417,60 @@ function runModelChecks() {
     row.textContent = `${item.severity === "critical" ? "✕" : "!"} ${item.sheet}!${item.address} — ${item.label}: ${item.detail}`;
     list.appendChild(row);
   }
+  renderCheckActions(result, wb);
   const dialog = $("checkDialog");
   if (dialog && !dialog.open) dialog.showModal();
   setStatus(`Model checks: ${result.counts.critical} critical, ${result.counts.warning} warning(s) across ${result.scanned.cells} cells.${skipped}`);
+}
+
+// A finding the operator can act on right here: text numbers on the active
+// sheet become audited value edits (with a number format that preserves how the
+// cell looked). Only the active sheet, because staged edits target one sheet.
+function renderCheckActions(result, wb) {
+  const actions = $("checkActions");
+  if (!actions) return;
+  actions.replaceChildren();
+  const sheet = wb.sheets[wb.active].name;
+  const flagged = result.findings.filter((item) => item.rule === "number_as_text" && item.sheet === sheet);
+  if (!flagged.length) return;
+  const fix = document.createElement("button");
+  fix.id = "checkFixNumbers";
+  fix.className = "mini-btn";
+  fix.textContent = `Convert ${flagged.length} text number${flagged.length === 1 ? "" : "s"} on ${sheet}`;
+  fix.addEventListener("click", () => convertTextNumbers(new Set(flagged.map((item) => item.address))));
+  actions.appendChild(fix);
+}
+
+function convertTextNumbers(addresses) {
+  const profile = globalThis.SXLProfileRuntime;
+  const wb = state.workbook;
+  if (!profile || !wb || !addresses || !addresses.size) return;
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before editing cells.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before editing cells.");
+  const sheet = wb.sheets[wb.active];
+  const cells = [...addresses].map((address) => {
+    const cell = (sheet.cells || {})[address] || {};
+    return { address, value: cell.v, formula: cell.f };
+  });
+  const plan = profile.planConvertNumbers(cells);
+  if (!plan.edits.length) return setStatus("Nothing on this sheet can be converted safely.");
+  // The Office-free lane writes plain values and refuses formatting, so the
+  // number format only travels when the selected engine can accept it. Saying
+  // which one happened is the honest half of that trade.
+  const engine = ($("editEngine") || {}).value;
+  const allowFormat = engine !== "headless_value";
+  rememberDraftEdit();
+  const pending = activePending();
+  for (const edit of plan.edits) {
+    pending.set(edit.address, allowFormat ? { value: edit.value, format: edit.format } : { value: edit.value });
+  }
+  updatePendingBar();
+  renderGrid();
+  const dialog = $("checkDialog");
+  if (dialog && dialog.open) dialog.close();
+  setStatus(`Staged conversion of ${plan.edits.length} text number${plan.edits.length === 1 ? "" : "s"} on ${sheet.name}. ` +
+    (allowFormat ? "Apply commits them to the ledger with a number format that keeps their appearance."
+      : "Apply commits them to the ledger as plain numbers; choose Live Excel to keep the original number format."));
 }
 
 // Release only the locally proven, single-cell numeric-format journey.
