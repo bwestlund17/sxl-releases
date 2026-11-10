@@ -1432,13 +1432,55 @@ function renderCheckActions(result, wb) {
   actions.replaceChildren();
   const sheet = wb.sheets[wb.active].name;
   const flagged = result.findings.filter((item) => item.rule === "number_as_text" && item.sheet === sheet);
-  if (!flagged.length) return;
-  const fix = document.createElement("button");
-  fix.id = "checkFixNumbers";
-  fix.className = "mini-btn";
-  fix.textContent = `Convert ${flagged.length} text number${flagged.length === 1 ? "" : "s"} on ${sheet}`;
-  fix.addEventListener("click", () => convertTextNumbers(new Set(flagged.map((item) => item.address))));
-  actions.appendChild(fix);
+  if (flagged.length) {
+    const fix = document.createElement("button");
+    fix.id = "checkFixNumbers";
+    fix.className = "mini-btn";
+    fix.textContent = `Convert ${flagged.length} text number${flagged.length === 1 ? "" : "s"} on ${sheet}`;
+    fix.addEventListener("click", () => convertTextNumbers(new Set(flagged.map((item) => item.address))));
+    actions.appendChild(fix);
+  }
+  const colours = result.findings.filter((item) =>
+    (item.rule === "uncolored_input" || item.rule === "input_colored_formula") && item.sheet === sheet);
+  if (colours.length) {
+    const repaint = document.createElement("button");
+    repaint.id = "checkFixColors";
+    repaint.className = "mini-btn";
+    repaint.textContent = `Repaint ${colours.length} cell${colours.length === 1 ? "" : "s"} on ${sheet}`;
+    repaint.addEventListener("click", () => repaintColourCells(colours));
+    actions.appendChild(repaint);
+  }
+}
+
+// BIWS repaint. The cell's own value or formula is re-written with the colour so
+// the change is a real cell mutation the ledger can describe — a style-only
+// write would save bytes the audit could not account for.
+function repaintColourCells(findings) {
+  const wb = state.workbook;
+  if (!wb || !findings || !findings.length) return;
+  if (state.revertingRun) return setStatus("Wait for Undo to finish before editing cells.");
+  if (state.shortcutQueue?.busy()) return setStatus("Wait for audited shortcuts to finish before editing cells.");
+  const allowFormat = ($("editEngine") || {}).value !== "headless_value";
+  if (!allowFormat) {
+    return setStatus("Colours need Live Excel; the Office-free lane writes plain values only.");
+  }
+  const sheet = wb.sheets[wb.active];
+  const pending = activePending();
+  let staged = 0;
+  for (const finding of findings) {
+    const cell = (sheet.cells || {})[finding.address] || {};
+    const colour = finding.rule === "input_colored_formula" ? "#000000" : "#0000FF";
+    const edit = cell.f ? { formula: cell.f, fontColor: colour } : { value: cell.v === null || cell.v === undefined ? "" : String(cell.v), fontColor: colour };
+    pending.set(finding.address, edit);
+    staged++;
+  }
+  if (!staged) return;
+  rememberDraftEdit();
+  updatePendingBar();
+  renderGrid();
+  const dialog = $("checkDialog");
+  if (dialog && dialog.open) dialog.close();
+  setStatus(`Staged ${staged} colour repair${staged === 1 ? "" : "s"} on ${sheet.name}. Apply commits them with each cell's value so the ledger records the change.`);
 }
 
 // Shared staging for both entry points (the Checks dialog and the selection
